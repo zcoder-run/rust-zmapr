@@ -1,6 +1,6 @@
 [package]
 name = "zmapr"
-version = "0.0.1"
+version = "0.0.2-WIP"
 description = "Code and content mapper for AI-optimized context."
 edition = "2024"
 license = "MIT OR Apache-2.0"
@@ -20,11 +20,17 @@ unsafe_code = "forbid"
 [dependencies]
 # -- Async
 tokio = { version = "1", features = ["full"] }
-# -- Http
-reqwest = "0.13"
-# -- FS
-simple-fs = "0.12"
-# -- Html
+# -- AI
+genai = "0.7.0-beta.15"
+# -- Serde
+serde = { version = "1", features = ["derive"] }
+serde_with = { version = "3", features = ["macros"] }
+# -- Content Formats
 htmlr = "0.1"
+pdf = "234"
+# -- FS & Http
+reqwest = "0.13"
+simple-fs = "0.12"
+
 # -- Others
 derive_more = { version = "2", features = ["from", "display"] }
