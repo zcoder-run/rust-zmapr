@@ -1,15 +1,16 @@
 // region:    --- Modules
 
 mod derive_aliases;
-mod error;
+mod macros;
+mod webc;
 
 #[allow(unused)]
 use derive_aliases::*;
 
-pub mod build;
-pub mod macros;
-pub mod webc;
+mod error;
+mod process;
 
 pub use error::{Error, Result};
+pub use process::*;
 
 // endregion: --- Modules

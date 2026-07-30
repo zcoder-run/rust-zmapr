@@ -8,6 +8,15 @@ pub enum Error {
 	#[from(String, &String, &str)]
 	Custom(String),
 
+	// -- Process
+	InvalidConfiguration(String),
+
+	Unsupported(String),
+
+	InvalidCache(String),
+
+	MalformedState(String),
+
 	// -- Externals
 	#[from]
 	Io(std::io::Error),
