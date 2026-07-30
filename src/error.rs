@@ -11,6 +11,15 @@ pub enum Error {
 	// -- Externals
 	#[from]
 	Io(std::io::Error),
+
+	#[from]
+	Reqwest(reqwest::Error),
+
+	#[from]
+	InvalidHeaderName(reqwest::header::InvalidHeaderName),
+
+	#[from]
+	InvalidHeaderValue(reqwest::header::InvalidHeaderValue),
 }
 
 // region:    --- Custom

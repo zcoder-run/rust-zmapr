@@ -27,10 +27,10 @@ serde = { version = "1", features = ["derive"] }
 serde_with = { version = "3", features = ["macros"] }
 # -- Content Formats
 htmlr = "0.1"
-pdf = "234"
 # -- FS & Http
 reqwest = "0.13"
 simple-fs = "0.12"
 
 # -- Others
 derive_more = { version = "2", features = ["from", "display"] }
+macro_rules_attribute = "0.2"
