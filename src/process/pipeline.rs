@@ -1,6 +1,7 @@
 use std::future::Future;
 use std::pin::Pin;
 
+use super::progress::{ProcessProgress, ProcessProgressPublisher};
 use super::{ProcessContentOptions, ProcessFailure, ProcessItem, ProcessStage};
 use crate::{Error, Result};
 use simple_fs::SPath;
@@ -18,6 +19,7 @@ pub(crate) struct WorkflowContext {
 	pub(crate) content_map: SPath,
 	pub(crate) max_concurrency: usize,
 	pub(crate) resume: bool,
+	pub(crate) progress: ProcessProgressPublisher,
 }
 
 #[derive(Debug, Clone)]
@@ -156,8 +158,19 @@ async fn execute_deferred_stage(
 	stage: ProcessStage,
 	message: &'static str,
 ) -> Result<StageOutput> {
-	let stage = DeferredStage { stage, message };
-	stage.execute(context, input).await
+	context
+		.progress
+		.publish(ProcessProgress::StageStarted { stage });
+	let deferred_stage = DeferredStage { stage, message };
+	let result = deferred_stage.execute(context, input).await;
+
+	if result.is_ok() {
+		context
+			.progress
+			.publish(ProcessProgress::StageCompleted { stage });
+	}
+
+	result
 }
 
 // endregion: --- Pipeline

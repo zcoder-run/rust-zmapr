@@ -1,13 +1,22 @@
-use super::pipeline::{ArtifactSet, WorkflowContext, run_pipeline};
-use crate::{ContentSource, Error, ProcessContentOptions, ProcessContentResponse, ProcessStage, Result};
+use super::pipeline::{run_pipeline, StageOutput, WorkflowContext};
+use super::progress::{
+	new_completion_channel, new_progress_channel, ProcessProgressPublisher,
+};
+use super::response::{ProcessContentHandle, ProcessContentOutput};
+use super::state::{new_process_state, ProcessQuery};
+use crate::{ContentSource, Error, ProcessContentOptions, ProcessStage, Result};
 use simple_fs::SPath;
 
 pub async fn process_content(
 	source: impl Into<ContentSource>,
 	options: ProcessContentOptions,
-) -> Result<ProcessContentResponse> {
+) -> Result<ProcessContentHandle> {
 	let source = source.into();
 	let layout = validate_request(&source, &options)?;
+	let (progress_tx, progress_rx) = new_progress_channel()?;
+	let state = new_process_state();
+	let query = ProcessQuery::new(state.clone());
+	let progress = ProcessProgressPublisher::new(progress_tx, state);
 	let context = WorkflowContext {
 		destination: layout.destination,
 		fetch_cache: layout.fetch_cache,
@@ -18,14 +27,19 @@ pub async fn process_content(
 		content_map: layout.content_map,
 		max_concurrency: options.max_concurrency,
 		resume: options.resume,
+		progress,
 	};
+	let (completion_tx, completion_rx) = new_completion_channel();
+	let handle = ProcessContentHandle::new(progress_rx, completion_rx, query);
 	let _ = source;
-	let _ = ArtifactSet::empty(context.fetch_cache.clone());
+	tokio::spawn(async move {
+		let completion = run_pipeline(&context, &options)
+			.await
+			.map(|output| process_content_output(&context, &options, output));
+		let _ = completion_tx.send(completion);
+	});
 
-	match run_pipeline(&context, &options).await {
-		Ok(_) => Err(Error::Unsupported("no executable processing stage was selected".into())),
-		Err(error) => Err(error),
-	}
+	Ok(handle)
 }
 
 // region:    --- Support
@@ -38,6 +52,23 @@ struct WorkflowLayout {
 	manifest: SPath,
 	journal: SPath,
 	content_map: SPath,
+}
+
+fn process_content_output(
+	context: &WorkflowContext,
+	options: &ProcessContentOptions,
+	output: StageOutput,
+) -> ProcessContentOutput {
+	ProcessContentOutput {
+		destination: context.destination.clone(),
+		manifest_path: context.manifest.is_file().then(|| context.manifest.clone()),
+		content_root: output.artifacts.root,
+		content_map_path: (options.content_map.is_some() && context.content_map.is_file())
+			.then(|| context.content_map.clone()),
+		completed_items: output.completed_items,
+		skipped_items: output.skipped_items,
+		failures: output.failures,
+	}
 }
 
 fn validate_request(source: &ContentSource, options: &ProcessContentOptions) -> Result<WorkflowLayout> {

@@ -1,6 +1,7 @@
 // region:    --- Modules
 
 mod derive_aliases;
+mod event_base;
 mod macros;
 mod webc;
 
