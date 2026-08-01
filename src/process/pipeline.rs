@@ -1,7 +1,10 @@
 use std::future::Future;
 use std::pin::Pin;
 
+use super::fetch::{execute_local_fetch, load_prior_local_fetch};
+use super::options::FetchOptions;
 use super::progress::{ProcessProgress, ProcessProgressPublisher};
+use super::source::ContentSource;
 use super::{ProcessContentOptions, ProcessFailure, ProcessItem, ProcessStage};
 use crate::{Error, Result};
 use simple_fs::SPath;
@@ -10,6 +13,7 @@ use simple_fs::SPath;
 
 #[derive(Debug, Clone)]
 pub(crate) struct WorkflowContext {
+	pub(crate) source: ContentSource,
 	pub(crate) destination: SPath,
 	pub(crate) fetch_cache: SPath,
 	pub(crate) sanitize_output: SPath,
@@ -107,17 +111,13 @@ pub(crate) async fn run_pipeline(
 	context: &WorkflowContext,
 	options: &ProcessContentOptions,
 ) -> Result<StageOutput> {
-	let mut output = StageOutput::passthrough(ArtifactSet::empty(context.fetch_cache.clone()));
-
-	if options.fetch.is_some() {
-		output = execute_deferred_stage(
-			context,
-			output.artifacts,
-			ProcessStage::Fetch,
-			"source acquisition is deferred",
-		)
-		.await?;
-	}
+	let mut output = if let Some(fetch_options) = options.fetch.as_ref() {
+		execute_fetch_stage(context, fetch_options).await?
+	} else if requires_prior_fetch(options) {
+		StageOutput::passthrough(load_prior_local_fetch(context)?)
+	} else {
+		StageOutput::passthrough(ArtifactSet::empty(context.fetch_cache.clone()))
+	};
 
 	if options.sanitize.is_some() {
 		output = execute_deferred_stage(
@@ -150,6 +150,39 @@ pub(crate) async fn run_pipeline(
 	}
 
 	Ok(output)
+}
+
+async fn execute_fetch_stage(
+	context: &WorkflowContext,
+	options: &FetchOptions,
+) -> Result<StageOutput> {
+	context
+		.progress
+		.publish(ProcessProgress::StageStarted {
+			stage: ProcessStage::Fetch,
+		});
+	let result = match &context.source {
+		ContentSource::LocalPath(source) => execute_local_fetch(source, options, context).await,
+		ContentSource::Website(_) => Err(Error::Unsupported(
+			"website Fetch execution is not implemented yet".into(),
+		)),
+	};
+
+	if result.is_ok() {
+		context
+			.progress
+			.publish(ProcessProgress::StageCompleted {
+				stage: ProcessStage::Fetch,
+			});
+	}
+
+	result
+}
+
+fn requires_prior_fetch(options: &ProcessContentOptions) -> bool {
+	options.sanitize.is_some()
+		|| options.ai_augment.is_some()
+		|| options.content_map.is_some()
 }
 
 async fn execute_deferred_stage(

@@ -22,6 +22,9 @@ pub enum Error {
 	Io(std::io::Error),
 
 	#[from]
+	SimpleFs(simple_fs::Error),
+
+	#[from]
 	Reqwest(reqwest::Error),
 
 	#[from]

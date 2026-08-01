@@ -1,3 +1,4 @@
+use super::fetch::validate_source;
 use super::pipeline::{run_pipeline, StageOutput, WorkflowContext};
 use super::progress::{
 	new_completion_channel, new_progress_channel, ProcessProgressPublisher,
@@ -18,6 +19,7 @@ pub async fn process_content(
 	let query = ProcessQuery::new(state.clone());
 	let progress = ProcessProgressPublisher::new(progress_tx, state);
 	let context = WorkflowContext {
+		source,
 		destination: layout.destination,
 		fetch_cache: layout.fetch_cache,
 		sanitize_output: layout.sanitize_output,
@@ -31,7 +33,6 @@ pub async fn process_content(
 	};
 	let (completion_tx, completion_rx) = new_completion_channel();
 	let handle = ProcessContentHandle::new(progress_rx, completion_rx, query);
-	let _ = source;
 	tokio::spawn(async move {
 		let completion = run_pipeline(&context, &options)
 			.await
@@ -97,6 +98,12 @@ fn validate_request(source: &ContentSource, options: &ProcessContentOptions) -> 
 		));
 	}
 
+	if options.fetch.is_some()
+		&& let ContentSource::LocalPath(local_source) = source
+	{
+		validate_source(local_source)?;
+	}
+
 	if let Some(ai_augment) = &options.ai_augment {
 		validate_ai_configuration(ProcessStage::AiAugment, &ai_augment.provider, &ai_augment.model)?;
 	}
@@ -107,20 +114,17 @@ fn validate_request(source: &ContentSource, options: &ProcessContentOptions) -> 
 
 	let layout = resolve_layout(options);
 
-	if options.fetch.is_none() && (options.sanitize.is_some() || options.ai_augment.is_some()) {
-		if !layout.fetch_cache.is_dir() {
-			return Err(Error::InvalidCache(format!(
-				"Fetch cache does not exist: {}",
-				layout.fetch_cache
-			)));
-		}
-
-		if !layout.manifest.is_file() {
+	if options.fetch.is_none()
+		&& (options.sanitize.is_some()
+			|| options.ai_augment.is_some()
+			|| options.content_map.is_some())
+		&& !layout.fetch_cache.is_dir()
+		&& !layout.manifest.is_file()
+	{
 			return Err(Error::MalformedState(format!(
 				"Fetch manifest does not exist: {}",
 				layout.manifest
 			)));
-		}
 	}
 
 	if let ContentSource::Website(_) = source {

@@ -2,6 +2,7 @@
 
 mod map;
 mod options;
+mod fetch;
 mod pipeline;
 mod process_impl;
 mod progress;

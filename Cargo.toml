@@ -27,6 +27,9 @@ serde = { version = "1", features = ["derive"] }
 serde_with = { version = "3", features = ["macros"] }
 # -- Content Formats
 htmlr = "0.1"
+serde_json = "1"
+# -- Encoding
+sha2 = "0.10"
 # -- FS & Http
 reqwest = "0.13"
 simple-fs = "0.12"
