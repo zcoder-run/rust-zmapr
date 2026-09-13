@@ -37,9 +37,7 @@ impl<T> MpscTx<T> {
 		self.inner
 			.send(message)
 			.await
-			.map_err(|_| EventBaseError::TxDisconnected {
-				channel: self.channel,
-			})
+			.map_err(|_| EventBaseError::TxDisconnected { channel: self.channel })
 	}
 
 	pub(crate) fn try_send(&self, message: T) -> EventBaseResult<bool> {
@@ -47,9 +45,7 @@ impl<T> MpscTx<T> {
 			Ok(()) => Ok(true),
 			Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => Ok(false),
 			Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
-				Err(EventBaseError::TxDisconnected {
-					channel: self.channel,
-				})
+				Err(EventBaseError::TxDisconnected { channel: self.channel })
 			}
 		}
 	}
@@ -64,9 +60,7 @@ impl<T> MpscRx<T> {
 		self.inner
 			.recv()
 			.await
-			.ok_or(EventBaseError::RxDisconnected {
-				channel: self.channel,
-			})
+			.ok_or(EventBaseError::RxDisconnected { channel: self.channel })
 	}
 
 	pub(crate) fn is_disconnected(&self) -> bool {

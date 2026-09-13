@@ -1,10 +1,8 @@
 use super::fetch::validate_source;
-use super::pipeline::{run_pipeline, StageOutput, WorkflowContext};
-use super::progress::{
-	new_completion_channel, new_progress_channel, ProcessProgressPublisher,
-};
+use super::pipeline::{StageOutput, WorkflowContext, run_pipeline};
+use super::progress::{ProcessProgressPublisher, new_completion_channel, new_progress_channel};
 use super::response::{ProcessContentHandle, ProcessContentOutput};
-use super::state::{new_process_state, ProcessQuery};
+use super::state::{ProcessQuery, new_process_state};
 use crate::{ContentSource, Error, ProcessContentOptions, ProcessStage, Result};
 use simple_fs::SPath;
 
@@ -115,16 +113,14 @@ fn validate_request(source: &ContentSource, options: &ProcessContentOptions) -> 
 	let layout = resolve_layout(options);
 
 	if options.fetch.is_none()
-		&& (options.sanitize.is_some()
-			|| options.ai_augment.is_some()
-			|| options.content_map.is_some())
+		&& (options.sanitize.is_some() || options.ai_augment.is_some() || options.content_map.is_some())
 		&& !layout.fetch_cache.is_dir()
 		&& !layout.manifest.is_file()
 	{
-			return Err(Error::MalformedState(format!(
-				"Fetch manifest does not exist: {}",
-				layout.manifest
-			)));
+		return Err(Error::MalformedState(format!(
+			"Fetch manifest does not exist: {}",
+			layout.manifest
+		)));
 	}
 
 	if let ContentSource::Website(_) = source {

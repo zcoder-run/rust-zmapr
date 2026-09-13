@@ -9,18 +9,11 @@ pub(crate) type EventBaseResult<T> = core::result::Result<T, EventBaseError>;
 pub(crate) enum EventBaseError {
 	Custom(String),
 
-	InvalidCapacity {
-		channel: &'static str,
-		capacity: usize,
-	},
+	InvalidCapacity { channel: &'static str, capacity: usize },
 
-	TxDisconnected {
-		channel: &'static str,
-	},
+	TxDisconnected { channel: &'static str },
 
-	RxDisconnected {
-		channel: &'static str,
-	},
+	RxDisconnected { channel: &'static str },
 }
 
 // endregion: --- Types
@@ -37,10 +30,7 @@ impl EventBaseError {
 	}
 
 	pub(crate) fn is_disconnected(&self) -> bool {
-		matches!(
-			self,
-			Self::TxDisconnected { .. } | Self::RxDisconnected { .. }
-		)
+		matches!(self, Self::TxDisconnected { .. } | Self::RxDisconnected { .. })
 	}
 }
 

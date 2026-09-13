@@ -1,10 +1,9 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
-
 use zmapr::{
-	process_content, AiAugmentOptions, ContentMapOptions, ContentSource, Error, FetchOptions,
-	ProcessContentOptions, ProcessStage,
+	AiAugmentOptions, ContentMapOptions, ContentSource, Error, FetchOptions, ProcessContentOptions, ProcessStage,
+	process_content,
 };
 
 type Result<T> = core::result::Result<T, Box<dyn std::error::Error>>; // For tests.
@@ -23,9 +22,7 @@ async fn test_process_fetch_local_file_returns_output_and_progress() -> Result<(
 		local_fetch_options(&destination, false, false),
 	)
 	.await?;
-	let _progress_rx = handle
-		.take_progress_rx()
-		.ok_or("Fetch should provide a progress receiver")?;
+	let _progress_rx = handle.take_progress_rx().ok_or("Fetch should provide a progress receiver")?;
 	let output = handle.wait_output().await?;
 
 	// -- Check
@@ -51,18 +48,12 @@ async fn test_process_fetch_local_file_returns_output_and_progress() -> Result<(
 	let content_root: &Path = output.content_root.as_ref();
 	assert_eq!(content_root, source_path.as_path());
 
-	let manifest_path = output
-		.manifest_path
-		.as_ref()
-		.ok_or("Fetch should publish a manifest")?;
+	let manifest_path = output.manifest_path.as_ref().ok_or("Fetch should publish a manifest")?;
 	assert!(manifest_path.is_file());
 
-	let manifest: serde_json::Value =
-		serde_json::from_str(&fs::read_to_string(manifest_path.as_std_path())?)?;
+	let manifest: serde_json::Value = serde_json::from_str(&fs::read_to_string(manifest_path.as_std_path())?)?;
 	assert_eq!(
-		manifest
-			.get("complete")
-			.and_then(serde_json::Value::as_bool),
+		manifest.get("complete").and_then(serde_json::Value::as_bool),
 		Some(true)
 	);
 	assert!(output.content_map_path.is_none());
@@ -127,12 +118,8 @@ async fn test_process_fetch_copies_directory_artifacts_and_publishes_manifest() 
 	let content_root: &Path = output.content_root.as_ref();
 	assert_eq!(content_root, expected_root.as_path());
 
-	let manifest_path = output
-		.manifest_path
-		.as_ref()
-		.ok_or("copied Fetch should publish a manifest")?;
-	let manifest: serde_json::Value =
-		serde_json::from_str(&fs::read_to_string(manifest_path.as_std_path())?)?;
+	let manifest_path = output.manifest_path.as_ref().ok_or("copied Fetch should publish a manifest")?;
+	let manifest: serde_json::Value = serde_json::from_str(&fs::read_to_string(manifest_path.as_std_path())?)?;
 	let manifest_items = manifest
 		.get("items")
 		.and_then(serde_json::Value::as_array)
@@ -288,8 +275,7 @@ async fn test_process_fetch_deferred_ai_stages_remain_unsupported() -> Result<()
 		ProcessContentOptions::new(path_text(&destination))
 			.with_content_map(ContentMapOptions::new("test-provider", "test-model")),
 	] {
-		let handle =
-			process_content(ContentSource::local_path(path_text(&source_path)), options).await?;
+		let handle = process_content(ContentSource::local_path(path_text(&source_path)), options).await?;
 		let result = handle.wait_output().await;
 		let error = match result {
 			Err(error) => error,
@@ -305,24 +291,16 @@ async fn test_process_fetch_deferred_ai_stages_remain_unsupported() -> Result<()
 
 fn fixture_root(test_name: &str) -> Result<PathBuf> {
 	let timestamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
-	let root = PathBuf::from("tests-data/.tmp").join(format!(
-		"{test_name}-{}-{timestamp}",
-		std::process::id()
-	));
+	let root = PathBuf::from("tests-data/.tmp").join(format!("{test_name}-{}-{timestamp}", std::process::id()));
 	fs::create_dir_all(&root)?;
 	Ok(root)
 }
 
-fn local_fetch_options(
-	destination: &Path,
-	copy_local_files: bool,
-	resume: bool,
-) -> ProcessContentOptions {
-	let mut options =
-		ProcessContentOptions::new(path_text(destination)).with_fetch(FetchOptions {
-			copy_local_files,
-			..FetchOptions::default()
-		});
+fn local_fetch_options(destination: &Path, copy_local_files: bool, resume: bool) -> ProcessContentOptions {
+	let mut options = ProcessContentOptions::new(path_text(destination)).with_fetch(FetchOptions {
+		copy_local_files,
+		..FetchOptions::default()
+	});
 	options.resume = resume;
 	options
 }

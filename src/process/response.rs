@@ -1,4 +1,4 @@
-use super::progress::{event_base_error_to_error, ProcessCompletionRx, ProgressRx};
+use super::progress::{ProcessCompletionRx, ProgressRx, event_base_error_to_error};
 use super::state::ProcessQuery;
 use crate::Result;
 use simple_fs::SPath;
@@ -57,15 +57,11 @@ pub enum ProcessStage {
 }
 
 // endregion: --- Types
- 
+
 // region:    --- Constructors
 
 impl ProcessContentHandle {
-	pub(crate) fn new(
-		progress_rx: ProgressRx,
-		final_rx: ProcessCompletionRx,
-		query: ProcessQuery,
-	) -> Self {
+	pub(crate) fn new(progress_rx: ProgressRx, final_rx: ProcessCompletionRx, query: ProcessQuery) -> Self {
 		Self {
 			progress_rx: Some(progress_rx),
 			final_rx,
@@ -91,11 +87,7 @@ impl ProcessContentHandle {
 
 	/// Waits for the completed workflow output.
 	pub async fn wait_output(self) -> Result<ProcessContentOutput> {
-		self
-			.final_rx
-			.recv()
-			.await
-			.map_err(event_base_error_to_error)?
+		self.final_rx.recv().await.map_err(event_base_error_to_error)?
 	}
 }
 

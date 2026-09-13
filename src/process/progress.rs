@@ -1,12 +1,9 @@
+use super::response::{ProcessContentOutput, ProcessFailure, ProcessItem, ProcessStage};
+use super::state::ProcessStateStore;
+use crate::event_base::{EventBaseError, MpscRx, MpscTx, OnceRx, OnceTx, new_mpsc_bounded_default, new_once};
+use crate::{Error, Result};
 use std::fmt;
 use std::sync::Arc;
-
-use super::state::ProcessStateStore;
-use super::response::{ProcessContentOutput, ProcessFailure, ProcessItem, ProcessStage};
-use crate::event_base::{
-	new_mpsc_bounded_default, new_once, EventBaseError, MpscRx, MpscTx, OnceRx, OnceTx,
-};
-use crate::{Error, Result};
 
 // region:    --- Types
 
@@ -17,29 +14,19 @@ use crate::{Error, Result};
 #[derive(Debug, Clone)]
 pub enum ProcessProgress {
 	/// A processing stage started.
-	StageStarted {
-		stage: ProcessStage,
-	},
+	StageStarted { stage: ProcessStage },
 
 	/// An item completed successfully.
-	ItemCompleted {
-		item: ProcessItem,
-	},
+	ItemCompleted { item: ProcessItem },
 
 	/// An item was skipped or reused.
-	ItemSkipped {
-		item: ProcessItem,
-	},
+	ItemSkipped { item: ProcessItem },
 
 	/// An item failed during processing.
-	ItemFailed {
-		failure: ProcessFailure,
-	},
+	ItemFailed { failure: ProcessFailure },
 
 	/// A processing stage completed.
-	StageCompleted {
-		stage: ProcessStage,
-	},
+	StageCompleted { stage: ProcessStage },
 }
 
 pub(crate) type ProcessProgressTx = MpscTx<ProcessProgress>;
@@ -64,8 +51,7 @@ pub(crate) struct ProcessProgressPublisher {
 
 pub(crate) fn new_progress_channel() -> Result<(ProcessProgressTx, ProgressRx)> {
 	let (tx, rx) =
-		new_mpsc_bounded_default::<ProcessProgress>("process-progress")
-			.map_err(event_base_error_to_error)?;
+		new_mpsc_bounded_default::<ProcessProgress>("process-progress").map_err(event_base_error_to_error)?;
 
 	Ok((tx, ProgressRx::new(rx)))
 }
@@ -104,10 +90,7 @@ impl ProcessProgressPublisher {
 impl ProgressRx {
 	/// Receives the next progress notification.
 	pub async fn recv(&mut self) -> Result<ProcessProgress> {
-		self.inner
-			.recv()
-			.await
-			.map_err(event_base_error_to_error)
+		self.inner.recv().await.map_err(event_base_error_to_error)
 	}
 
 	/// Returns whether the progress channel has been disconnected.
@@ -122,9 +105,7 @@ impl ProgressRx {
 
 impl fmt::Debug for ProcessProgressPublisher {
 	fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-		formatter
-			.debug_struct("ProcessProgressPublisher")
-			.finish_non_exhaustive()
+		formatter.debug_struct("ProcessProgressPublisher").finish_non_exhaustive()
 	}
 }
 
@@ -135,15 +116,15 @@ impl fmt::Debug for ProcessProgressPublisher {
 pub(crate) fn event_base_error_to_error(error: EventBaseError) -> Error {
 	match error {
 		EventBaseError::Custom(message) => Error::custom(message),
-		EventBaseError::InvalidCapacity { channel, capacity } => Error::InvalidConfiguration(
-			format!("event channel {channel} has invalid capacity {capacity}"),
-		),
-		EventBaseError::TxDisconnected { channel } => Error::MalformedState(format!(
-			"event channel {channel} sender disconnected"
-		)),
-		EventBaseError::RxDisconnected { channel } => Error::MalformedState(format!(
-			"event channel {channel} receiver disconnected"
-		)),
+		EventBaseError::InvalidCapacity { channel, capacity } => {
+			Error::InvalidConfiguration(format!("event channel {channel} has invalid capacity {capacity}"))
+		}
+		EventBaseError::TxDisconnected { channel } => {
+			Error::MalformedState(format!("event channel {channel} sender disconnected"))
+		}
+		EventBaseError::RxDisconnected { channel } => {
+			Error::MalformedState(format!("event channel {channel} receiver disconnected"))
+		}
 	}
 }
 

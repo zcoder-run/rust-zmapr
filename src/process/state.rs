@@ -1,7 +1,6 @@
-use std::sync::{Arc, Mutex, MutexGuard};
-
 use super::progress::ProcessProgress;
 use super::response::{ProcessFailure, ProcessItem, ProcessStage};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 // region:    --- Types
 

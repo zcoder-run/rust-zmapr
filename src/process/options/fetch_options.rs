@@ -39,18 +39,12 @@ impl FetchOptions {
 		self
 	}
 
-	pub fn with_include(
-		mut self,
-		include: impl IntoIterator<Item = impl Into<String>>,
-	) -> Self {
+	pub fn with_include(mut self, include: impl IntoIterator<Item = impl Into<String>>) -> Self {
 		self.include = include.into_iter().map(|value| value.into()).collect();
 		self
 	}
 
-	pub fn with_exclude(
-		mut self,
-		exclude: impl IntoIterator<Item = impl Into<String>>,
-	) -> Self {
+	pub fn with_exclude(mut self, exclude: impl IntoIterator<Item = impl Into<String>>) -> Self {
 		self.exclude = exclude.into_iter().map(|value| value.into()).collect();
 		self
 	}
@@ -60,12 +54,8 @@ impl FetchOptions {
 		self
 	}
 
-	pub fn append_includes(
-		mut self,
-		includes: impl IntoIterator<Item = impl Into<String>>,
-	) -> Self {
-		self.include
-			.extend(includes.into_iter().map(|value| value.into()));
+	pub fn append_includes(mut self, includes: impl IntoIterator<Item = impl Into<String>>) -> Self {
+		self.include.extend(includes.into_iter().map(|value| value.into()));
 		self
 	}
 
@@ -74,12 +64,8 @@ impl FetchOptions {
 		self
 	}
 
-	pub fn append_excludes(
-		mut self,
-		excludes: impl IntoIterator<Item = impl Into<String>>,
-	) -> Self {
-		self.exclude
-			.extend(excludes.into_iter().map(|value| value.into()));
+	pub fn append_excludes(mut self, excludes: impl IntoIterator<Item = impl Into<String>>) -> Self {
+		self.exclude.extend(excludes.into_iter().map(|value| value.into()));
 		self
 	}
 }

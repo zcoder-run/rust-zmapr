@@ -36,9 +36,7 @@ impl<T> OnceTx<T> {
 	pub(crate) fn send(self, value: T) -> EventBaseResult<()> {
 		self.inner
 			.send(value)
-			.map_err(|_| EventBaseError::TxDisconnected {
-				channel: self.channel,
-			})
+			.map_err(|_| EventBaseError::TxDisconnected { channel: self.channel })
 	}
 }
 
@@ -46,9 +44,7 @@ impl<T> OnceRx<T> {
 	pub(crate) async fn recv(self) -> EventBaseResult<T> {
 		self.inner
 			.await
-			.map_err(|_| EventBaseError::RxDisconnected {
-				channel: self.channel,
-			})
+			.map_err(|_| EventBaseError::RxDisconnected { channel: self.channel })
 	}
 }
 

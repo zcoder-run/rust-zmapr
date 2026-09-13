@@ -1,8 +1,5 @@
 use std::path::Path;
-
-use zmapr::{
-	AiAugmentOptions, ContentMapOptions, FetchOptions, ProcessContentOptions, SanitizeOptions,
-};
+use zmapr::{AiAugmentOptions, ContentMapOptions, FetchOptions, ProcessContentOptions, SanitizeOptions};
 
 type Result<T> = core::result::Result<T, Box<dyn std::error::Error>>; // For tests.
 
@@ -11,11 +8,7 @@ fn test_process_options_process_content_chainable_configuration() -> Result<()> 
 	// -- Setup & Fixtures
 	let options = ProcessContentOptions::new("tests-data/.tmp/options-destination")
 		.with_fetch(FetchOptions::default().with_copy_local_files(true))
-		.with_sanitize(
-			SanitizeOptions::default()
-				.with_slim_html(true)
-				.with_convert_to_markdown(true),
-		)
+		.with_sanitize(SanitizeOptions::default().with_slim_html(true).with_convert_to_markdown(true))
 		.with_ai_augment(AiAugmentOptions::new("initial-provider", "initial-model"))
 		.with_content_map(ContentMapOptions::new("map-provider", "map-model"))
 		.with_resume(true)
@@ -31,10 +24,7 @@ fn test_process_options_process_content_chainable_configuration() -> Result<()> 
 	assert!(options.resume);
 	assert_eq!(options.max_concurrency, 3);
 
-	let fetch = options
-		.fetch
-		.as_ref()
-		.ok_or("Process options should contain Fetch options")?;
+	let fetch = options.fetch.as_ref().ok_or("Process options should contain Fetch options")?;
 	assert!(fetch.copy_local_files);
 
 	let sanitize = options
@@ -108,9 +98,7 @@ fn test_process_options_fetch_chainable_collection_configuration() -> Result<()>
 #[test]
 fn test_process_options_sanitize_chainable_configuration() -> Result<()> {
 	// -- Setup & Fixtures
-	let options = SanitizeOptions::default()
-		.with_slim_html(true)
-		.with_convert_to_markdown(true);
+	let options = SanitizeOptions::default().with_slim_html(true).with_convert_to_markdown(true);
 
 	// -- Exec
 

@@ -1,18 +1,16 @@
-use std::fs::{copy, rename, write};
-use std::path::{Component, Path};
-use std::sync::Arc;
-
-use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
-use simple_fs::{ensure_dir, list_files, read_to_string, SPath};
-use tokio::sync::Semaphore;
-
+use super::options::FetchOptions;
 use super::pipeline::{ArtifactItem, ArtifactSet, StageOutput, WorkflowContext};
 use super::progress::ProcessProgress;
-use super::options::FetchOptions;
 use super::response::{ProcessFailure, ProcessItem, ProcessStage};
 use super::source::LocalContentSource;
 use crate::{Error, Result};
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use simple_fs::{SPath, ensure_dir, list_files, read_to_string};
+use std::fs::{copy, rename, write};
+use std::path::{Component, Path};
+use std::sync::Arc;
+use tokio::sync::Semaphore;
 
 // region:    --- Types
 
@@ -67,10 +65,7 @@ struct FetchManifestItem {
 
 // region:    --- Public Functions
 
-pub(crate) fn discover_local(
-	source: &LocalContentSource,
-	options: &FetchOptions,
-) -> Result<LocalFetchDiscovery> {
+pub(crate) fn discover_local(source: &LocalContentSource, options: &FetchOptions) -> Result<LocalFetchDiscovery> {
 	let source_path = &source.path;
 	let source_identity = source_identity(source_path)?;
 	let source_kind = validate_source_kind(source_path, &source_identity)?;
@@ -165,16 +160,15 @@ pub(crate) async fn execute_local_fetch(
 		let source_path = item.local_path.clone();
 		let task_artifact_path = artifact_path.clone();
 		let copy_local_files = options.copy_local_files;
-		let permit = semaphore.clone().acquire_owned().await.map_err(|_| {
-			Error::MalformedState(
-				"Fetch materialization concurrency control closed".to_owned(),
-			)
-		})?;
+		let permit = semaphore
+			.clone()
+			.acquire_owned()
+			.await
+			.map_err(|_| Error::MalformedState("Fetch materialization concurrency control closed".to_owned()))?;
 		let task = tokio::task::spawn_blocking(move || {
 			let _permit = permit;
 			if copy_local_files {
-				copy_local_file(&source_path, &task_artifact_path)
-					.map_err(|error| error.to_string())
+				copy_local_file(&source_path, &task_artifact_path).map_err(|error| error.to_string())
 			} else {
 				Ok(())
 			}
@@ -188,9 +182,9 @@ pub(crate) async fn execute_local_fetch(
 			output_path: Some(artifact_path.clone()),
 			stage: ProcessStage::Fetch,
 		};
-		let item_result = task.await.map_err(|error| {
-			Error::MalformedState(format!("Fetch materialization task failed: {error}"))
-		})?;
+		let item_result = task
+			.await
+			.map_err(|error| Error::MalformedState(format!("Fetch materialization task failed: {error}")))?;
 
 		match item_result {
 			Ok(()) => {
@@ -204,9 +198,7 @@ pub(crate) async fn execute_local_fetch(
 				manifest_items.push(manifest_item(&item, Some(&artifact_path))?);
 				artifacts.push(artifact);
 				completed_items.push(process_item.clone());
-				context
-					.progress
-					.publish(ProcessProgress::ItemCompleted { item: process_item });
+				context.progress.publish(ProcessProgress::ItemCompleted { item: process_item });
 			}
 			Err(error) => {
 				let failed_item = ProcessItem {
@@ -220,9 +212,7 @@ pub(crate) async fn execute_local_fetch(
 				};
 				manifest_items.push(manifest_item(&item, None)?);
 				failures.push(failure.clone());
-				context
-					.progress
-					.publish(ProcessProgress::ItemFailed { failure });
+				context.progress.publish(ProcessProgress::ItemFailed { failure });
 			}
 		}
 	}
@@ -281,13 +271,12 @@ pub(crate) fn load_prior_local_fetch(context: &WorkflowContext) -> Result<Artifa
 			)));
 		}
 
-		let relative_path = normalize_manifest_relative_path(&manifest_item.relative_path)
-			.map_err(|error| {
-				Error::MalformedState(format!(
-					"invalid Fetch manifest relative path {}: {error}",
-					manifest_item.relative_path
-				))
-			})?;
+		let relative_path = normalize_manifest_relative_path(&manifest_item.relative_path).map_err(|error| {
+			Error::MalformedState(format!(
+				"invalid Fetch manifest relative path {}: {error}",
+				manifest_item.relative_path
+			))
+		})?;
 
 		if relative_path != manifest_item.relative_path.as_str() {
 			return Err(Error::MalformedState(format!(
@@ -331,11 +320,8 @@ pub(crate) fn load_prior_local_fetch(context: &WorkflowContext) -> Result<Artifa
 			)));
 		}
 
-		let artifact_hash = hash_file(&artifact_path).map_err(|error| {
-			Error::InvalidCache(format!(
-				"failed to read Fetch artifact {artifact_path}: {error}"
-			))
-		})?;
+		let artifact_hash = hash_file(&artifact_path)
+			.map_err(|error| Error::InvalidCache(format!("failed to read Fetch artifact {artifact_path}: {error}")))?;
 
 		if artifact_hash != manifest_item.content_hash {
 			return Err(Error::InvalidCache(format!(
@@ -352,9 +338,10 @@ pub(crate) fn load_prior_local_fetch(context: &WorkflowContext) -> Result<Artifa
 		});
 	}
 
-	if items.windows(2).any(|window| {
-		window[0].relative_path.as_str() >= window[1].relative_path.as_str()
-	}) {
+	if items
+		.windows(2)
+		.any(|window| window[0].relative_path.as_str() >= window[1].relative_path.as_str())
+	{
 		return Err(Error::MalformedState(
 			"Fetch manifest items are not in deterministic order".to_owned(),
 		));
@@ -411,16 +398,12 @@ fn fetch_manifest_matches(
 	options: &FetchOptions,
 	context: &WorkflowContext,
 ) -> Result<bool> {
-	if manifest.version != 1
-		|| !manifest.complete
-		|| manifest.options != FetchManifestOptions::from(options)
-	{
+	if manifest.version != 1 || !manifest.complete || manifest.options != FetchManifestOptions::from(options) {
 		return Ok(false);
 	}
 
 	let expected_source_path = path_to_string(&discovery.source_path)?;
-	let expected_artifact_root_path =
-		artifact_root_for(&discovery.source_path, options, context);
+	let expected_artifact_root_path = artifact_root_for(&discovery.source_path, options, context);
 	let expected_artifact_root = path_to_string(&expected_artifact_root_path)?;
 
 	if manifest.source != discovery.source
@@ -443,8 +426,7 @@ fn fetch_manifest_matches(
 		if manifest_item.source != current_item.source
 			|| manifest_item.relative_path != current_item.relative_path
 			|| manifest_item.local_path != expected_local_path
-			|| manifest_item.artifact_path.as_deref()
-				!= Some(expected_artifact_path.as_str())
+			|| manifest_item.artifact_path.as_deref() != Some(expected_artifact_path.as_str())
 			|| manifest_item.media_type != current_item.media_type
 			|| manifest_item.content_hash != current_item.content_hash
 		{
@@ -497,11 +479,9 @@ fn build_reused_stage_output(
 			stage: ProcessStage::Fetch,
 		};
 
-		context
-			.progress
-			.publish(ProcessProgress::ItemSkipped {
-				item: process_item.clone(),
-			});
+		context.progress.publish(ProcessProgress::ItemSkipped {
+			item: process_item.clone(),
+		});
 		artifacts.push(artifact);
 		skipped_items.push(process_item);
 	}
@@ -519,20 +499,14 @@ fn build_reused_stage_output(
 
 fn read_fetch_manifest(path: &SPath) -> Result<FetchManifest> {
 	if !path.is_file() {
-		return Err(Error::InvalidCache(format!(
-			"Fetch manifest does not exist: {path}"
-		)));
+		return Err(Error::InvalidCache(format!("Fetch manifest does not exist: {path}")));
 	}
 
-	let content = read_to_string(path).map_err(|error| {
-		Error::MalformedState(format!("failed to read Fetch manifest {path}: {error}"))
-	})?;
+	let content = read_to_string(path)
+		.map_err(|error| Error::MalformedState(format!("failed to read Fetch manifest {path}: {error}")))?;
 
-	serde_json::from_str(&content).map_err(|error| {
-		Error::MalformedState(format!(
-			"failed to deserialize Fetch manifest {path}: {error}"
-		))
-	})
+	serde_json::from_str(&content)
+		.map_err(|error| Error::MalformedState(format!("failed to deserialize Fetch manifest {path}: {error}")))
 }
 
 fn read_fetch_manifest_for_resume(path: &SPath) -> Option<FetchManifest> {
@@ -544,10 +518,7 @@ fn read_fetch_manifest_for_resume(path: &SPath) -> Option<FetchManifest> {
 	serde_json::from_str(&content).ok()
 }
 
-fn validate_prior_manifest(
-	manifest: &FetchManifest,
-	context: &WorkflowContext,
-) -> Result<()> {
+fn validate_prior_manifest(manifest: &FetchManifest, context: &WorkflowContext) -> Result<()> {
 	if manifest.version != 1 {
 		return Err(Error::MalformedState(format!(
 			"unsupported Fetch manifest version: {}",
@@ -556,9 +527,7 @@ fn validate_prior_manifest(
 	}
 
 	if !manifest.complete {
-		return Err(Error::MalformedState(
-			"Fetch manifest is incomplete".to_owned(),
-		));
+		return Err(Error::MalformedState("Fetch manifest is incomplete".to_owned()));
 	}
 
 	if manifest.source.trim().is_empty()
@@ -574,8 +543,7 @@ fn validate_prior_manifest(
 		let expected_artifact_root = path_to_string(&context.fetch_cache)?;
 		if manifest.artifact_root != expected_artifact_root {
 			return Err(Error::MalformedState(
-				"Fetch manifest artifact root is incompatible with the workflow cache"
-					.to_owned(),
+				"Fetch manifest artifact root is incompatible with the workflow cache".to_owned(),
 			));
 		}
 	}
@@ -583,11 +551,7 @@ fn validate_prior_manifest(
 	Ok(())
 }
 
-fn artifact_root_for(
-	source_path: &SPath,
-	options: &FetchOptions,
-	context: &WorkflowContext,
-) -> SPath {
+fn artifact_root_for(source_path: &SPath, options: &FetchOptions, context: &WorkflowContext) -> SPath {
 	if options.copy_local_files {
 		context.fetch_cache.clone()
 	} else {
@@ -610,10 +574,7 @@ fn copy_local_file(source: &SPath, destination: &SPath) -> Result<()> {
 	Ok(())
 }
 
-fn manifest_item(
-	item: &LocalFetchItem,
-	artifact_path: Option<&SPath>,
-) -> Result<FetchManifestItem> {
+fn manifest_item(item: &LocalFetchItem, artifact_path: Option<&SPath>) -> Result<FetchManifestItem> {
 	Ok(FetchManifestItem {
 		source: item.source.clone(),
 		relative_path: item.relative_path.clone(),
@@ -626,33 +587,22 @@ fn manifest_item(
 
 fn write_fetch_manifest(path: &SPath, manifest: &FetchManifest) -> Result<()> {
 	ensure_parent(path)?;
-	let manifest_json = serde_json::to_string_pretty(manifest).map_err(|error| {
-		Error::MalformedState(format!("failed to serialize Fetch manifest: {error}"))
-	})?;
+	let manifest_json = serde_json::to_string_pretty(manifest)
+		.map_err(|error| Error::MalformedState(format!("failed to serialize Fetch manifest: {error}")))?;
 	let temporary_path = SPath::from(format!("{path}.tmp"));
 	let manifest_content = format!("{manifest_json}\n");
-	write(
-		temporary_path.as_std_path(),
-		manifest_content.as_bytes(),
-	)
-	.map_err(|error| {
-		Error::MalformedState(format!(
-			"failed to write Fetch manifest {temporary_path}: {error}"
-		))
-	})?;
-	rename(temporary_path.as_std_path(), path.as_std_path()).map_err(|error| {
-		Error::MalformedState(format!(
-			"failed to replace Fetch manifest {path}: {error}"
-		))
-	})?;
+	write(temporary_path.as_std_path(), manifest_content.as_bytes())
+		.map_err(|error| Error::MalformedState(format!("failed to write Fetch manifest {temporary_path}: {error}")))?;
+	rename(temporary_path.as_std_path(), path.as_std_path())
+		.map_err(|error| Error::MalformedState(format!("failed to replace Fetch manifest {path}: {error}")))?;
 	Ok(())
 }
 
 fn ensure_parent(path: &SPath) -> Result<()> {
 	let path_ref: &Path = path.as_ref();
-	let parent = path_ref.parent().ok_or_else(|| {
-		Error::MalformedState(format!("workflow path has no parent: {path}"))
-	})?;
+	let parent = path_ref
+		.parent()
+		.ok_or_else(|| Error::MalformedState(format!("workflow path has no parent: {path}")))?;
 	let parent = SPath::from(parent.to_string_lossy().into_owned());
 	ensure_dir(&parent)?;
 	Ok(())
@@ -760,9 +710,9 @@ fn list_paths(root: &SPath, patterns: &[String]) -> Result<Vec<SPath>> {
 
 fn discover_single_file(path: &SPath, patterns: &[String]) -> Result<Vec<SPath>> {
 	let source_path: &Path = path.as_ref();
-	let file_name = source_path.file_name().ok_or_else(|| {
-		Error::InvalidConfiguration("local file source has no file name".to_owned())
-	})?;
+	let file_name = source_path
+		.file_name()
+		.ok_or_else(|| Error::InvalidConfiguration("local file source has no file name".to_owned()))?;
 	let file_name = Path::new(file_name);
 	let parent = source_path
 		.parent()
@@ -784,8 +734,7 @@ fn discover_single_file(path: &SPath, patterns: &[String]) -> Result<Vec<SPath>>
 fn candidate_matches_file(candidate: &SPath, source: &SPath, file_name: &Path) -> bool {
 	let candidate_path: &Path = candidate.as_ref();
 
-	paths_equivalent(candidate_path, source.as_ref())
-		|| paths_equivalent(candidate_path, file_name)
+	paths_equivalent(candidate_path, source.as_ref()) || paths_equivalent(candidate_path, file_name)
 }
 
 fn local_path_for_candidate(root: &SPath, candidate: SPath) -> SPath {
@@ -809,27 +758,23 @@ fn relative_path_for(root: &SPath, path: &SPath) -> Result<String> {
 
 fn relative_file_name(path: &SPath) -> Result<String> {
 	let path: &Path = path.as_ref();
-	let file_name = path.file_name().ok_or_else(|| {
-		Error::InvalidConfiguration("local file source has no file name".to_owned())
-	})?;
+	let file_name = path
+		.file_name()
+		.ok_or_else(|| Error::InvalidConfiguration("local file source has no file name".to_owned()))?;
 
 	normalize_relative_path(Path::new(file_name))
 }
 
 fn normalize_relative_path(path: &Path) -> Result<String> {
-	if path.is_absolute()
-		|| path
-			.components()
-			.any(|component| component == Component::ParentDir)
-	{
+	if path.is_absolute() || path.components().any(|component| component == Component::ParentDir) {
 		return Err(Error::InvalidConfiguration(
 			"local source produced an invalid relative path".to_owned(),
 		));
 	}
 
-	let value = path.to_str().ok_or_else(|| {
-		Error::InvalidConfiguration("local source path is not valid UTF-8".to_owned())
-	})?;
+	let value = path
+		.to_str()
+		.ok_or_else(|| Error::InvalidConfiguration("local source path is not valid UTF-8".to_owned()))?;
 	let value = value.replace('\\', "/");
 	let value = value.strip_prefix("./").unwrap_or(&value);
 
@@ -844,9 +789,9 @@ fn normalize_relative_path(path: &Path) -> Result<String> {
 
 fn source_identity(path: &SPath) -> Result<String> {
 	let path: &Path = path.as_ref();
-	let value = path.to_str().ok_or_else(|| {
-		Error::InvalidConfiguration("local source path is not valid UTF-8".to_owned())
-	})?;
+	let value = path
+		.to_str()
+		.ok_or_else(|| Error::InvalidConfiguration("local source path is not valid UTF-8".to_owned()))?;
 
 	Ok(value.replace('\\', "/"))
 }
@@ -905,8 +850,7 @@ mod tests {
 	#[test]
 	fn test_process_fetch_discover_local_single_file_metadata_and_hash() -> Result<()> {
 		// -- Setup & Fixtures
-		let root =
-			fixture_root("test_process_fetch_discover_local_single_file_metadata_and_hash")?;
+		let root = fixture_root("test_process_fetch_discover_local_single_file_metadata_and_hash")?;
 		let source_path = root.join("lib.rs");
 		let contents = b"pub fn answer() -> u32 { 42 }\n";
 		write_file(&source_path, contents)?;
@@ -920,10 +864,7 @@ mod tests {
 		assert_eq!(discovery.items.len(), 1);
 		assert_eq!(discovery.source, path_text(&source_path));
 
-		let item = discovery
-			.items
-			.first()
-			.ok_or("single-file discovery should return one item")?;
+		let item = discovery.items.first().ok_or("single-file discovery should return one item")?;
 		assert_eq!(item.source, path_text(&source_path));
 		assert_eq!(item.relative_path, "lib.rs");
 		assert_eq!(item.media_type.as_deref(), Some("text/rust"));
@@ -1031,10 +972,7 @@ mod tests {
 
 	fn fixture_root(name: &str) -> Result<PathBuf> {
 		let timestamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
-		let root = PathBuf::from("tests-data/.tmp").join(format!(
-			"{name}-{}-{timestamp}",
-			std::process::id()
-		));
+		let root = PathBuf::from("tests-data/.tmp").join(format!("{name}-{}-{timestamp}", std::process::id()));
 		create_dir_all(&root)?;
 		Ok(root)
 	}
