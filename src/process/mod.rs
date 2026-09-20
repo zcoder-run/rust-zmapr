@@ -1,7 +1,7 @@
 // region:    --- Modules
 
-mod fetch;
-mod map;
+mod fetchr;
+mod mapr;
 mod options;
 mod pipeline;
 mod process_impl;
@@ -10,7 +10,7 @@ mod response;
 mod source;
 mod state;
 
-pub use map::*;
+pub use mapr::*;
 pub use options::*;
 pub use process_impl::*;
 pub use progress::{ProcessProgress, ProgressRx};

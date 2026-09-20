@@ -1,67 +1,18 @@
-use super::options::FetchOptions;
-use super::pipeline::{ArtifactItem, ArtifactSet, StageOutput, WorkflowContext};
-use super::progress::ProcessProgress;
-use super::response::{ProcessFailure, ProcessItem, ProcessStage};
-use super::source::LocalContentSource;
+use super::fetchr_types::{
+	FetchManifest, FetchManifestItem, FetchManifestOptions, LocalFetchDiscovery, LocalFetchItem, LocalSourceKind,
+};
+use crate::process::options::FetchOptions;
+use crate::process::pipeline::{ArtifactItem, ArtifactSet, StageOutput, WorkflowContext};
+use crate::process::progress::ProcessProgress;
+use crate::process::response::{ProcessFailure, ProcessItem, ProcessStage};
+use crate::process::source::LocalContentSource;
 use crate::{Error, Result};
-use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use simple_fs::{SPath, ensure_dir, list_files, read_to_string};
 use std::fs::{copy, rename, write};
 use std::path::{Component, Path};
 use std::sync::Arc;
 use tokio::sync::Semaphore;
-
-// region:    --- Types
-
-#[derive(Debug, Clone)]
-pub(crate) struct LocalFetchDiscovery {
-	pub(crate) source: String,
-	pub(crate) source_path: SPath,
-	pub(crate) items: Vec<LocalFetchItem>,
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct LocalFetchItem {
-	pub(crate) source: String,
-	pub(crate) relative_path: String,
-	pub(crate) local_path: SPath,
-	pub(crate) media_type: Option<String>,
-	pub(crate) content_hash: String,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-struct FetchManifest {
-	version: u32,
-	complete: bool,
-	source: String,
-	source_path: String,
-	options: FetchManifestOptions,
-	artifact_root: String,
-	items: Vec<FetchManifestItem>,
-}
-
-#[derive(Debug, Deserialize, PartialEq, Eq, Serialize)]
-struct FetchManifestOptions {
-	include: Vec<String>,
-	exclude: Vec<String>,
-	copy_local_files: bool,
-	same_host_only: bool,
-	max_depth: usize,
-	follow_links: bool,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-struct FetchManifestItem {
-	source: String,
-	relative_path: String,
-	local_path: String,
-	artifact_path: Option<String>,
-	media_type: Option<String>,
-	content_hash: String,
-}
-
-// endregion: --- Types
 
 // region:    --- Public Functions
 
@@ -353,24 +304,12 @@ pub(crate) fn load_prior_local_fetch(context: &WorkflowContext) -> Result<Artifa
 	})
 }
 
-// endregion: --- Public Functions
-
-// region:    --- Froms
-
-impl From<&FetchOptions> for FetchManifestOptions {
-	fn from(options: &FetchOptions) -> Self {
-		Self {
-			include: options.include.clone(),
-			exclude: options.exclude.clone(),
-			copy_local_files: options.copy_local_files,
-			same_host_only: options.same_host_only,
-			max_depth: options.max_depth,
-			follow_links: options.follow_links,
-		}
-	}
+pub(crate) fn validate_source(source: &LocalContentSource) -> Result<()> {
+	let identity = source_identity(&source.path)?;
+	validate_source_kind(&source.path, &identity).map(|_| ())
 }
 
-// endregion: --- Froms
+// endregion: --- Public Functions
 
 // region:    --- Support
 
@@ -614,17 +553,6 @@ fn path_to_string(path: &SPath) -> Result<String> {
 		.to_str()
 		.map(|value| value.replace('\\', "/"))
 		.ok_or_else(|| Error::MalformedState("workflow path is not valid UTF-8".to_owned()))
-}
-
-#[derive(Debug, Clone, Copy)]
-enum LocalSourceKind {
-	File,
-	Directory,
-}
-
-pub(super) fn validate_source(source: &LocalContentSource) -> Result<()> {
-	let identity = source_identity(&source.path)?;
-	validate_source_kind(&source.path, &identity).map(|_| ())
 }
 
 fn validate_source_kind(path: &SPath, identity: &str) -> Result<LocalSourceKind> {

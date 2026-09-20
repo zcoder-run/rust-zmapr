@@ -1,4 +1,4 @@
-use super::fetch::validate_source;
+use super::fetchr::validate_source;
 use super::pipeline::{StageOutput, WorkflowContext, run_pipeline};
 use super::progress::{ProcessProgressPublisher, new_completion_channel, new_progress_channel};
 use super::response::{ProcessContentHandle, ProcessContentOutput};

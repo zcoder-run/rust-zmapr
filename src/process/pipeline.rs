@@ -1,4 +1,4 @@
-use super::fetch::{execute_local_fetch, load_prior_local_fetch};
+use super::fetchr::{execute_local_fetch, load_prior_local_fetch};
 use super::options::FetchOptions;
 use super::progress::{ProcessProgress, ProcessProgressPublisher};
 use super::source::ContentSource;
