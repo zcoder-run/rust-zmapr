@@ -127,6 +127,7 @@ pub struct WebFetchOptions {
     pub same_host_only: bool,
     pub follow_links: bool,
     pub max_depth: usize,
+    pub llms: Option<bool>,
 }
 ```
 
@@ -134,7 +135,7 @@ Fetch selects local files or crawls websites. Common include and exclude pattern
 
 For local sources, Fetch either copies files below `.zmapr/fetch` or retains their original paths according to `copy_local_files`. It records source-relative paths and stable content hashes.
 
-Website Fetch crawls from the starting URL, scoping candidate links to the starting URL base folder, and optionally following links while respecting `same_host_only` and `max_depth` settings.
+Website Fetch crawls from the starting URL, scoping candidate links to the starting URL base folder, and optionally following links while respecting `same_host_only` and `max_depth` settings. When `llms` is enabled, Fetch probes for an `llms.txt` file at the remote base folder URL before crawling. If `llms.txt` is discovered and contains valid entries, Fetch downloads the listed documents directly, mirroring the remote URL folder hierarchy locally and using the final URL path segment for the file name. If `llms.txt` is absent, empty, or unparseable, Fetch transparently falls back to regular HTML link crawling. In regular HTML crawling, scoped download paths without a file extension automatically receive a default `.html` extension.
 
 ### Sanitize
 
@@ -305,6 +306,7 @@ The first complete vertical slice is:
 - Optional copying into the Fetch cache.
 - Stable source hashes.
 - Website Fetch with URL base folder scoping, link extraction, and depth limits.
+- Website Fetch with `llms.txt` discovery, link parsing, and automatic HTML fallback.
 - Optional UTF-8 text and HTML Sanitize.
 - Fetch-only and Fetch-plus-Sanitize responses.
 Structured errors for AI Augment and AI Content Map stages.
