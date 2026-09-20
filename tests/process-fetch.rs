@@ -473,6 +473,244 @@ async fn test_process_fetch_web_records_failures_for_broken_links() -> Result<()
 	Ok(())
 }
 
+#[tokio::test]
+async fn test_process_fetch_web_llms_discovery_and_fetch() -> Result<()> {
+	// -- Setup & Fixtures
+	let (port, _shutdown) = spawn_mock_server(|path| match path {
+		"/site/llms.txt" => (
+			"200 OK",
+			"text/plain",
+			"# Site Docs\n\n- [Intro](intro.md): Introduction\n- [Architecture](concepts/arch.md): System architecture\n",
+		),
+		"/site/intro.md" => ("200 OK", "text/markdown", "# Introduction\n"),
+		"/site/concepts/arch.md" => ("200 OK", "text/markdown", "# Architecture\n"),
+		_ => ("404 Not Found", "text/plain", "Not Found"),
+	})
+	.await?;
+
+	let root = fixture_root("test_process_fetch_web_llms_discovery_and_fetch")?;
+	let destination = root.join("destination");
+	let start_url = format!("http://127.0.0.1:{port}/site/");
+
+	let options = ProcessContentOptions::new(path_text(&destination)).with_fetch(
+		WebFetchRequest::new(&start_url)
+			.with_llms(true)
+			.with_same_host_only(true),
+	);
+
+	// -- Exec
+	let handle = process_content(options).await?;
+	let output = handle.wait_output().await?;
+
+	// -- Check
+	assert_eq!(output.completed_items.len(), 3);
+	assert!(output.failures.is_empty());
+
+	let completed_sources = output
+		.completed_items
+		.iter()
+		.map(|item| item.source.as_str())
+		.collect::<Vec<_>>();
+	assert_eq!(
+		completed_sources,
+		vec!["concepts/arch.md", "intro.md", "llms.txt"]
+	);
+
+	let fetch_dir = destination.join(".zmapr").join("fetch");
+	assert!(fetch_dir.join("llms.txt").is_file());
+	assert!(fetch_dir.join("intro.md").is_file());
+	assert!(fetch_dir.join("concepts").join("arch.md").is_file());
+
+	let manifest_path = output.manifest_path.as_ref().ok_or("Output should include a manifest")?;
+	let manifest: serde_json::Value = serde_json::from_str(&fs::read_to_string(manifest_path.as_std_path())?)?;
+	assert_eq!(
+		manifest.get("complete").and_then(serde_json::Value::as_bool),
+		Some(true)
+	);
+	let options_json = manifest.get("options").ok_or("Manifest should contain options")?;
+	assert_eq!(
+		options_json.get("llms").and_then(serde_json::Value::as_bool),
+		Some(true)
+	);
+
+	Ok(())
+}
+
+#[tokio::test]
+async fn test_process_fetch_web_llms_fallback_on_missing() -> Result<()> {
+	// -- Setup & Fixtures
+	let (port, _shutdown) = spawn_mock_server(|path| match path {
+		"/site/llms.txt" => ("404 Not Found", "text/plain", "Not Found"),
+		"/site/" | "/site/index.html" => (
+			"200 OK",
+			"text/html; charset=utf-8",
+			"<html><body><a href=\"page1.html\">P1</a></body></html>",
+		),
+		"/site/page1.html" => (
+			"200 OK",
+			"text/html; charset=utf-8",
+			"<html><body><h1>Page 1</h1></body></html>",
+		),
+		_ => ("404 Not Found", "text/plain", "Not Found"),
+	})
+	.await?;
+
+	let root = fixture_root("test_process_fetch_web_llms_fallback_on_missing")?;
+	let destination = root.join("destination");
+	let start_url = format!("http://127.0.0.1:{port}/site/");
+
+	let options = ProcessContentOptions::new(path_text(&destination)).with_fetch(
+		WebFetchRequest::new(&start_url)
+			.with_llms(true)
+			.with_follow_links(true)
+			.with_max_depth(1)
+			.with_same_host_only(true),
+	);
+
+	// -- Exec
+	let handle = process_content(options).await?;
+	let output = handle.wait_output().await?;
+
+	// -- Check
+	assert_eq!(output.completed_items.len(), 2);
+	assert!(output.failures.is_empty());
+
+	let completed_sources = output
+		.completed_items
+		.iter()
+		.map(|item| item.source.as_str())
+		.collect::<Vec<_>>();
+	assert_eq!(completed_sources, vec!["index.html", "page1.html"]);
+
+	let fetch_dir = destination.join(".zmapr").join("fetch");
+	assert!(fetch_dir.join("index.html").is_file());
+	assert!(fetch_dir.join("page1.html").is_file());
+
+	let manifest_path = output.manifest_path.as_ref().ok_or("Output should include a manifest")?;
+	let manifest: serde_json::Value = serde_json::from_str(&fs::read_to_string(manifest_path.as_std_path())?)?;
+	assert_eq!(
+		manifest.get("complete").and_then(serde_json::Value::as_bool),
+		Some(true)
+	);
+
+	Ok(())
+}
+
+#[tokio::test]
+async fn test_process_fetch_web_llms_fallback_on_empty() -> Result<()> {
+	// -- Setup & Fixtures
+	let (port, _shutdown) = spawn_mock_server(|path| match path {
+		"/site/llms.txt" => ("200 OK", "text/plain", ""),
+		"/site/" | "/site/index.html" => (
+			"200 OK",
+			"text/html; charset=utf-8",
+			"<html><body><a href=\"page1.html\">P1</a></body></html>",
+		),
+		"/site/page1.html" => (
+			"200 OK",
+			"text/html; charset=utf-8",
+			"<html><body><h1>Page 1</h1></body></html>",
+		),
+		_ => ("404 Not Found", "text/plain", "Not Found"),
+	})
+	.await?;
+
+	let root = fixture_root("test_process_fetch_web_llms_fallback_on_empty")?;
+	let destination = root.join("destination");
+	let start_url = format!("http://127.0.0.1:{port}/site/");
+
+	let options = ProcessContentOptions::new(path_text(&destination)).with_fetch(
+		WebFetchRequest::new(&start_url)
+			.with_llms(true)
+			.with_follow_links(true)
+			.with_max_depth(1)
+			.with_same_host_only(true),
+	);
+
+	// -- Exec
+	let handle = process_content(options).await?;
+	let output = handle.wait_output().await?;
+
+	// -- Check
+	assert_eq!(output.completed_items.len(), 2);
+	assert!(output.failures.is_empty());
+
+	let completed_sources = output
+		.completed_items
+		.iter()
+		.map(|item| item.source.as_str())
+		.collect::<Vec<_>>();
+	assert_eq!(completed_sources, vec!["index.html", "page1.html"]);
+
+	let fetch_dir = destination.join(".zmapr").join("fetch");
+	assert!(fetch_dir.join("index.html").is_file());
+	assert!(fetch_dir.join("page1.html").is_file());
+
+	Ok(())
+}
+
+#[tokio::test]
+async fn test_process_fetch_web_extensionless_path_defaults_html() -> Result<()> {
+	// -- Setup & Fixtures
+	let (port, _shutdown) = spawn_mock_server(|path| match path {
+		"/site/" | "/site/index.html" => (
+			"200 OK",
+			"text/html; charset=utf-8",
+			"<html><body><a href=\"intro\">Intro</a><a href=\"concepts/arch\">Arch</a></body></html>",
+		),
+		"/site/intro" => (
+			"200 OK",
+			"text/html; charset=utf-8",
+			"<html><body><h1>Intro</h1></body></html>",
+		),
+		"/site/concepts/arch" => (
+			"200 OK",
+			"text/html; charset=utf-8",
+			"<html><body><h1>Arch</h1></body></html>",
+		),
+		_ => ("404 Not Found", "text/plain", "Not Found"),
+	})
+	.await?;
+
+	let root = fixture_root("test_process_fetch_web_extensionless_path_defaults_html")?;
+	let destination = root.join("destination");
+	let start_url = format!("http://127.0.0.1:{port}/site/");
+
+	let options = ProcessContentOptions::new(path_text(&destination)).with_fetch(
+		WebFetchRequest::new(&start_url)
+			.with_follow_links(true)
+			.with_max_depth(2)
+			.with_same_host_only(true),
+	);
+
+	// -- Exec
+	let handle = process_content(options).await?;
+	let output = handle.wait_output().await?;
+
+	// -- Check
+	assert_eq!(output.completed_items.len(), 3);
+	assert!(output.failures.is_empty());
+
+	let completed_sources = output
+		.completed_items
+		.iter()
+		.map(|item| item.source.as_str())
+		.collect::<Vec<_>>();
+	assert_eq!(
+		completed_sources,
+		vec!["concepts/arch.html", "index.html", "intro.html"]
+	);
+
+	let fetch_dir = destination.join(".zmapr").join("fetch");
+	assert!(fetch_dir.join("index.html").is_file());
+	assert!(fetch_dir.join("intro.html").is_file());
+	assert!(fetch_dir.join("concepts").join("arch.html").is_file());
+	assert!(!fetch_dir.join("intro").exists());
+	assert!(!fetch_dir.join("concepts").join("arch").exists());
+
+	Ok(())
+}
+
 // region:    --- Support
 
 async fn spawn_mock_server<H>(handler: H) -> Result<(u16, tokio::sync::oneshot::Sender<()>)>

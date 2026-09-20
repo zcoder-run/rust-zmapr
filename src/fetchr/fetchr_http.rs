@@ -43,6 +43,21 @@ pub(crate) async fn execute_http_fetch(
 	let client = new_client(None)?;
 	let semaphore = Arc::new(Semaphore::new(context.max_concurrency));
 
+	if request.options.llms_enabled()
+		&& let Some(probe) = probe_llms_txt(&client, &base_folder_url).await
+	{
+		return execute_llms_fetch(
+			request,
+			context,
+			&client,
+			&base_folder_url,
+			&artifact_root,
+			semaphore,
+			probe,
+		)
+		.await;
+	}
+
 	let mut visited = HashSet::new();
 	visited.insert(start_url.as_str().to_owned());
 
@@ -227,6 +242,228 @@ pub(crate) async fn execute_http_fetch(
 	})
 }
 
+async fn execute_llms_fetch(
+	request: &WebFetchRequest,
+	context: &WorkflowContext,
+	client: &WebClient,
+	base_folder_url: &Url,
+	artifact_root: &SPath,
+	semaphore: Arc<Semaphore>,
+	probe: LlmsProbeResult,
+) -> Result<StageOutput> {
+	let mut artifacts = Vec::new();
+	let mut completed_items = Vec::new();
+	let mut skipped_items = Vec::new();
+	let mut failures = Vec::new();
+	let mut manifest_items = Vec::new();
+
+	let llms_relative_path = url_to_relative_path_with_options(&probe.probe_url, base_folder_url, false)?;
+	let llms_artifact_path = artifact_root.join(&llms_relative_path);
+	ensure_parent(&llms_artifact_path)?;
+	write(llms_artifact_path.as_std_path(), &probe.body)
+		.map_err(|err| Error::MalformedState(format!("failed to write llms.txt artifact: {err}")))?;
+
+	let llms_artifact_path_str = path_to_string(&llms_artifact_path)?;
+	let digest = Sha256::digest(&probe.body);
+	let llms_hash = format!("{digest:x}");
+
+	let llms_process_item = ProcessItem {
+		source: llms_relative_path.clone(),
+		output_path: Some(llms_artifact_path.clone()),
+		stage: ProcessStage::Fetch,
+	};
+	manifest_items.push(FetchManifestItem {
+		source: probe.probe_url.as_str().to_owned(),
+		relative_path: llms_relative_path.clone(),
+		local_path: llms_artifact_path_str.clone(),
+		artifact_path: Some(llms_artifact_path_str),
+		media_type: Some("text/plain".to_owned()),
+		content_hash: llms_hash.clone(),
+	});
+	artifacts.push(ArtifactItem {
+		source: probe.probe_url.as_str().to_owned(),
+		relative_path: llms_relative_path.clone(),
+		local_path: llms_artifact_path,
+		media_type: Some("text/plain".to_owned()),
+		source_hash: Some(llms_hash),
+	});
+	completed_items.push(llms_process_item.clone());
+	context.progress.publish(ProcessProgress::ItemCompleted {
+		item: llms_process_item,
+	});
+
+	let mut seen_relative_paths = HashSet::new();
+	seen_relative_paths.insert(llms_relative_path);
+
+	let mut candidates = Vec::new();
+	for entry_url in probe.entries {
+		if !is_url_in_scope(&entry_url, base_folder_url, &request.options) {
+			continue;
+		}
+
+		let relative_path = match url_to_relative_path_with_options(&entry_url, base_folder_url, false) {
+			Ok(path) => path,
+			Err(_) => continue,
+		};
+
+		if !seen_relative_paths.insert(relative_path.clone()) {
+			continue;
+		}
+
+		if is_path_selected(&relative_path, &request.common) {
+			candidates.push((entry_url, relative_path));
+		} else {
+			let process_item = ProcessItem {
+				source: relative_path,
+				output_path: None,
+				stage: ProcessStage::Fetch,
+			};
+			skipped_items.push(process_item.clone());
+			context.progress.publish(ProcessProgress::ItemSkipped {
+				item: process_item,
+			});
+		}
+	}
+
+	let mut tasks = Vec::with_capacity(candidates.len());
+	for (url, _relative_path) in candidates {
+		let permit = semaphore
+			.clone()
+			.acquire_owned()
+			.await
+			.map_err(|_| Error::MalformedState("Fetch HTTP concurrency control closed".to_owned()))?;
+		let client = client.clone();
+		let base_folder = base_folder_url.clone();
+
+		let task = tokio::spawn(async move {
+			let _permit = permit;
+			fetch_single_url_with_options(&client, &url, &base_folder, false).await
+		});
+		tasks.push(task);
+	}
+
+	for task in tasks {
+		let fetch_outcome = task
+			.await
+			.map_err(|err| Error::MalformedState(format!("Fetch HTTP task failed: {err}")))?;
+
+		match fetch_outcome {
+			Ok(fetched) => {
+				let relative_path = fetched.relative_path;
+				let source_url = fetched.url.as_str().to_owned();
+				let artifact_path = artifact_root.join(&relative_path);
+
+				if let Err(err) = ensure_parent(&artifact_path) {
+					let failure = ProcessFailure {
+						item: ProcessItem {
+							source: relative_path.clone(),
+							output_path: None,
+							stage: ProcessStage::Fetch,
+						},
+						message: err.to_string(),
+					};
+					failures.push(failure.clone());
+					context.progress.publish(ProcessProgress::ItemFailed { failure });
+					continue;
+				}
+
+				if let Err(err) = write(artifact_path.as_std_path(), &fetched.body) {
+					let failure = ProcessFailure {
+						item: ProcessItem {
+							source: relative_path.clone(),
+							output_path: None,
+							stage: ProcessStage::Fetch,
+						},
+						message: err.to_string(),
+					};
+					let artifact_path_str = path_to_string(&artifact_path).ok();
+					manifest_items.push(FetchManifestItem {
+						source: source_url,
+						relative_path: relative_path.clone(),
+						local_path: artifact_path_str.clone().unwrap_or_default(),
+						artifact_path: None,
+						media_type: fetched.media_type,
+						content_hash: fetched.content_hash,
+					});
+					failures.push(failure.clone());
+					context.progress.publish(ProcessProgress::ItemFailed { failure });
+					continue;
+				}
+
+				let artifact_path_str = path_to_string(&artifact_path)?;
+				let process_item = ProcessItem {
+					source: relative_path.clone(),
+					output_path: Some(artifact_path.clone()),
+					stage: ProcessStage::Fetch,
+				};
+
+				manifest_items.push(FetchManifestItem {
+					source: source_url,
+					relative_path: relative_path.clone(),
+					local_path: artifact_path_str.clone(),
+					artifact_path: Some(artifact_path_str),
+					media_type: fetched.media_type.clone(),
+					content_hash: fetched.content_hash.clone(),
+				});
+
+				artifacts.push(ArtifactItem {
+					source: fetched.url.as_str().to_owned(),
+					relative_path: relative_path.clone(),
+					local_path: artifact_path,
+					media_type: fetched.media_type.clone(),
+					source_hash: Some(fetched.content_hash),
+				});
+
+				completed_items.push(process_item.clone());
+				context.progress.publish(ProcessProgress::ItemCompleted {
+					item: process_item,
+				});
+			}
+			Err((url, err_msg)) => {
+				let relative = url_to_relative_path_with_options(&url, base_folder_url, false)
+					.unwrap_or_else(|_| url.as_str().to_owned());
+				let failed_item = ProcessItem {
+					source: relative,
+					output_path: None,
+					stage: ProcessStage::Fetch,
+				};
+				let failure = ProcessFailure {
+					item: failed_item,
+					message: err_msg,
+				};
+				failures.push(failure.clone());
+				context.progress.publish(ProcessProgress::ItemFailed { failure });
+			}
+		}
+	}
+
+	artifacts.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
+	completed_items.sort_by(|left, right| left.source.cmp(&right.source));
+	skipped_items.sort_by(|left, right| left.source.cmp(&right.source));
+	manifest_items.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
+
+	let manifest = FetchManifest {
+		version: FETCH_MANIFEST_VERSION,
+		complete: failures.is_empty(),
+		source: request.source.url.clone(),
+		source_path: request.source.url.clone(),
+		options: FetchManifestOptions::from(request),
+		artifact_root: path_to_string(artifact_root)?,
+		items: manifest_items,
+	};
+	write_fetch_manifest(&context.manifest, &manifest)?;
+
+	Ok(StageOutput {
+		artifacts: ArtifactSet {
+			root: artifact_root.clone(),
+			items: artifacts,
+		},
+		completed_items,
+		skipped_items,
+		failures,
+	})
+}
+
 pub(crate) fn validate_web_source(source: &WebContentSource) -> Result<()> {
 	let url = Url::parse(&source.url)
 		.map_err(|err| Error::InvalidConfiguration(format!("invalid web URL '{}': {err}", source.url)))?;
@@ -252,7 +489,16 @@ async fn fetch_single_url(
 	url: &Url,
 	base_folder_url: &Url,
 ) -> core::result::Result<FetchedHttpResource, (Url, String)> {
-	let relative_path = match url_to_relative_path(url, base_folder_url) {
+	fetch_single_url_with_options(client, url, base_folder_url, true).await
+}
+
+async fn fetch_single_url_with_options(
+	client: &WebClient,
+	url: &Url,
+	base_folder_url: &Url,
+	default_html: bool,
+) -> core::result::Result<FetchedHttpResource, (Url, String)> {
+	let relative_path = match url_to_relative_path_with_options(url, base_folder_url, default_html) {
 		Ok(path) => path,
 		Err(err) => return Err((url.clone(), err.to_string())),
 	};
@@ -362,6 +608,101 @@ pub(crate) fn is_depth_allowed(depth: usize, options: &WebFetchOptions) -> bool 
 
 // endregion: --- Base Folder & Scope
 
+// region:    --- llms.txt Discovery & Parsing
+
+struct LlmsProbeResult {
+	probe_url: Url,
+	body: Vec<u8>,
+	entries: Vec<Url>,
+}
+
+async fn probe_llms_txt(client: &WebClient, base_folder_url: &Url) -> Option<LlmsProbeResult> {
+	let probe_url = base_folder_url.join("llms.txt").ok()?;
+	let response = client.get(probe_url.as_str()).await.ok()?;
+	if !response.status().is_success() {
+		return None;
+	}
+	let bytes = response.bytes().await.ok()?.to_vec();
+	let text = std::str::from_utf8(&bytes).ok()?;
+	if text.trim().is_empty() {
+		return None;
+	}
+	let entries = parse_llms_entries(text, &probe_url);
+	if entries.is_empty() {
+		return None;
+	}
+	Some(LlmsProbeResult {
+		probe_url,
+		body: bytes,
+		entries,
+	})
+}
+
+pub(crate) fn parse_llms_entries(content: &str, probe_url: &Url) -> Vec<Url> {
+	let mut entries = Vec::new();
+	let mut seen = HashSet::new();
+
+	for line in content.lines() {
+		let trimmed = line.trim();
+		if trimmed.is_empty() || trimmed.starts_with('#') || trimmed.starts_with('>') {
+			continue;
+		}
+
+		if let Some(open_bracket) = trimmed.find('[')
+			&& let Some(rel_close) = trimmed[open_bracket..].find("](")
+		{
+			let start_url = open_bracket + rel_close + 2;
+			if let Some(end_url) = trimmed[start_url..].find(')') {
+				let raw_url = trimmed[start_url..start_url + end_url].trim();
+				if let Some(url) = resolve_llms_url(raw_url, probe_url)
+					&& seen.insert(url.as_str().to_owned())
+				{
+					entries.push(url);
+					continue;
+				}
+			}
+		}
+
+		let bare_candidate = trimmed
+			.strip_prefix("- ")
+			.or_else(|| trimmed.strip_prefix("* "))
+			.unwrap_or(trimmed)
+			.trim();
+
+		let first_word = bare_candidate.split_whitespace().next().unwrap_or("");
+		if (first_word.starts_with("http://") || first_word.starts_with("https://"))
+			&& let Some(url) = resolve_llms_url(first_word, probe_url)
+			&& seen.insert(url.as_str().to_owned())
+		{
+			entries.push(url);
+		}
+	}
+
+	entries
+}
+
+fn resolve_llms_url(raw_url: &str, probe_url: &Url) -> Option<Url> {
+	let raw_url = raw_url.trim();
+	if raw_url.is_empty() {
+		return None;
+	}
+
+	let clean_url = if let Some(hash_pos) = raw_url.find('#') {
+		&raw_url[..hash_pos]
+	} else {
+		raw_url
+	};
+
+	let mut resolved = probe_url.join(clean_url).ok()?;
+	if resolved.scheme() != "http" && resolved.scheme() != "https" {
+		return None;
+	}
+	resolved.set_fragment(None);
+	Some(resolved)
+}
+
+// endregion: --- llms.txt Discovery & Parsing
+
 // region:    --- Link Extraction
 
 /// Extracts and normalizes links from HTML content using `htmlr`.
@@ -408,6 +749,14 @@ pub(crate) fn extract_links(html: &str, current_url: &Url) -> Result<Vec<Url>> {
 
 /// Converts a scoped URL into a deterministic relative path for artifact storage.
 pub(crate) fn url_to_relative_path(url: &Url, base_folder_url: &Url) -> Result<String> {
+	url_to_relative_path_with_options(url, base_folder_url, true)
+}
+
+pub(crate) fn url_to_relative_path_with_options(
+	url: &Url,
+	base_folder_url: &Url,
+	default_html: bool,
+) -> Result<String> {
 	let mut clean_url = url.clone();
 	clean_url.set_query(None);
 	clean_url.set_fragment(None);
@@ -431,6 +780,8 @@ pub(crate) fn url_to_relative_path(url: &Url, base_folder_url: &Url) -> Result<S
 		"index.html".to_owned()
 	} else if relative.ends_with('/') {
 		format!("{relative}index.html")
+	} else if default_html && Path::new(relative).extension().is_none() {
+		format!("{relative}.html")
 	} else {
 		relative.to_owned()
 	};
@@ -581,18 +932,84 @@ mod tests {
 		let url_root_bare = Url::parse("https://docs.typesafe.ai/doc")?;
 		let url_nested_dir = Url::parse("https://docs.typesafe.ai/doc/sub/")?;
 		let url_file = Url::parse("https://docs.typesafe.ai/doc/guide.html?v=1#sec")?;
+		let url_clean = Url::parse("https://docs.typesafe.ai/doc/introduction")?;
+		let url_clean_nested = Url::parse("https://docs.typesafe.ai/doc/concepts/state")?;
 
 		// -- Exec
 		let rel_root_slash = url_to_relative_path(&url_root_slash, &base)?;
 		let rel_root_bare = url_to_relative_path(&url_root_bare, &base)?;
 		let rel_nested_dir = url_to_relative_path(&url_nested_dir, &base)?;
 		let rel_file = url_to_relative_path(&url_file, &base)?;
+		let rel_clean = url_to_relative_path(&url_clean, &base)?;
+		let rel_clean_nested = url_to_relative_path(&url_clean_nested, &base)?;
+		let rel_clean_no_default = url_to_relative_path_with_options(&url_clean, &base, false)?;
 
 		// -- Check
 		assert_eq!(rel_root_slash, "index.html");
 		assert_eq!(rel_root_bare, "index.html");
 		assert_eq!(rel_nested_dir, "sub/index.html");
 		assert_eq!(rel_file, "guide.html");
+		assert_eq!(rel_clean, "introduction.html");
+		assert_eq!(rel_clean_nested, "concepts/state.html");
+		assert_eq!(rel_clean_no_default, "introduction");
+
+		Ok(())
+	}
+
+	#[test]
+	fn test_fetchr_http_parse_llms_entries_markdown_links_and_descriptions() -> Result<()> {
+		// -- Setup & Fixtures
+		let probe_url = Url::parse("https://docs.typesafe.ai/llms.txt")?;
+		let content = r##"# TypeSafe AI
+
+> Summary of the documentation.
+
+- [Introduction](https://docs.typesafe.ai/introduction.md): Model overview.
+* [Quick start](https://docs.typesafe.ai/introduction/quickstart.md): Getting started.
+- [System One](concepts/system-one.md): Architecture description.
+- [Primitives (Questions)](/primitives.md): Question types.
+"##;
+
+		// -- Exec
+		let entries = parse_llms_entries(content, &probe_url);
+
+		// -- Check
+		let urls = entries.iter().map(Url::as_str).collect::<Vec<_>>();
+		assert_eq!(
+			urls,
+			vec![
+				"https://docs.typesafe.ai/introduction.md",
+				"https://docs.typesafe.ai/introduction/quickstart.md",
+				"https://docs.typesafe.ai/concepts/system-one.md",
+				"https://docs.typesafe.ai/primitives.md",
+			]
+		);
+
+		Ok(())
+	}
+
+	#[test]
+	fn test_fetchr_http_parse_llms_entries_bare_urls_and_deduplication() -> Result<()> {
+		// -- Setup & Fixtures
+		let probe_url = Url::parse("https://docs.typesafe.ai/doc/llms.txt")?;
+		let content = r##"
+# Bare URLs and duplicates
+https://docs.typesafe.ai/doc/page1.md
+- https://docs.typesafe.ai/doc/page2.md
+* https://docs.typesafe.ai/doc/page1.md
+- [Duplicate Page 1](page1.md)
+https://docs.typesafe.ai/doc/page2.md#anchor
+"##;
+
+		// -- Exec
+		let entries = parse_llms_entries(content, &probe_url);
+
+		// -- Check
+		let urls = entries.iter().map(Url::as_str).collect::<Vec<_>>();
+		assert_eq!(
+			urls,
+			vec!["https://docs.typesafe.ai/doc/page1.md", "https://docs.typesafe.ai/doc/page2.md"]
+		);
 
 		Ok(())
 	}

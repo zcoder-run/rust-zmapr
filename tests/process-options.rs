@@ -105,6 +105,7 @@ fn test_process_options_web_fetch_request_chainable_configuration() -> Result<()
 		.with_same_host_only(true)
 		.with_follow_links(true)
 		.with_max_depth(3)
+		.with_llms(true)
 		.with_include(["**/*.html"])
 		.append_include("api/**/*.html")
 		.with_exclude(["**/deprecated/**"])
@@ -117,6 +118,7 @@ fn test_process_options_web_fetch_request_chainable_configuration() -> Result<()
 	assert!(request.options.same_host_only);
 	assert!(request.options.follow_links);
 	assert_eq!(request.options.max_depth, 3);
+	assert_eq!(request.options.llms, Some(true));
 	assert_eq!(
 		request.common.include,
 		vec!["**/*.html".to_owned(), "api/**/*.html".to_owned()]

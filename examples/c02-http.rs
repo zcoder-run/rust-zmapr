@@ -6,7 +6,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 		WebFetchRequest::new("https://docs.typesafe.ai/introduction")
 			.with_same_host_only(true)
 			.with_follow_links(true)
-			.with_max_depth(1),
+			.with_max_depth(1)
+			.with_llms(true),
 	);
 
 	let handle = process_content(options).await?;

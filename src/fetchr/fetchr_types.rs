@@ -27,6 +27,8 @@ pub struct WebFetchOptions {
 	pub follow_links: bool,
 	/// Maximum link depth from the starting web URL.
 	pub max_depth: usize,
+	/// Enables `llms.txt` driven discovery at the base remote directory.
+	pub llms: Option<bool>,
 }
 
 impl Default for WebFetchOptions {
@@ -35,6 +37,7 @@ impl Default for WebFetchOptions {
 			same_host_only: true,
 			follow_links: false,
 			max_depth: 0,
+			llms: None,
 		}
 	}
 }
@@ -92,6 +95,15 @@ impl WebFetchOptions {
 	pub fn with_max_depth(mut self, max_depth: usize) -> Self {
 		self.max_depth = max_depth;
 		self
+	}
+
+	pub fn with_llms(mut self, llms: bool) -> Self {
+		self.llms = Some(llms);
+		self
+	}
+
+	pub(crate) fn llms_enabled(&self) -> bool {
+		self.llms.unwrap_or(false)
 	}
 }
 
@@ -178,6 +190,11 @@ impl WebFetchRequest {
 		self
 	}
 
+	pub fn with_llms(mut self, llms: bool) -> Self {
+		self.options.llms = Some(llms);
+		self
+	}
+
 	pub fn with_include(mut self, include: impl IntoIterator<Item = impl Into<String>>) -> Self {
 		self.common.include = include.into_iter().map(|value| value.into()).collect();
 		self
@@ -231,7 +248,7 @@ pub(crate) struct LocalFetchItem {
 	pub(crate) content_hash: String,
 }
 
-pub(crate) const FETCH_MANIFEST_VERSION: u32 = 2;
+pub(crate) const FETCH_MANIFEST_VERSION: u32 = 3;
 
 #[derive(Debug, Deserialize, Serialize)]
 pub(crate) struct FetchManifest {
@@ -258,6 +275,7 @@ pub(crate) enum FetchManifestOptions {
 		same_host_only: bool,
 		follow_links: bool,
 		max_depth: usize,
+		llms: Option<bool>,
 	},
 }
 
@@ -311,6 +329,7 @@ impl From<&WebFetchRequest> for FetchManifestOptions {
 			same_host_only: request.options.same_host_only,
 			follow_links: request.options.follow_links,
 			max_depth: request.options.max_depth,
+			llms: request.options.llms,
 		}
 	}
 }
@@ -362,6 +381,7 @@ mod tests {
 			.with_same_host_only(false)
 			.with_follow_links(true)
 			.with_max_depth(3)
+			.with_llms(true)
 			.with_include(["*.html"])
 			.append_include("*.pdf")
 			.with_exclude(["**/login"])
@@ -372,8 +392,69 @@ mod tests {
 		assert!(!request.options.same_host_only);
 		assert!(request.options.follow_links);
 		assert_eq!(request.options.max_depth, 3);
+		assert_eq!(request.options.llms, Some(true));
+		assert!(request.options.llms_enabled());
 		assert_eq!(request.common.include, vec!["*.html", "*.pdf"]);
 		assert_eq!(request.common.exclude, vec!["**/login", "**/logout"]);
+
+		Ok(())
+	}
+
+	#[test]
+	fn test_fetchr_types_web_options_llms_default() -> Result<()> {
+		// -- Setup & Fixtures
+		let options = WebFetchOptions::default();
+
+		// -- Check
+		assert_eq!(options.llms, None);
+		assert!(!options.llms_enabled());
+
+		Ok(())
+	}
+
+	#[test]
+	fn test_fetchr_types_web_request_with_llms() -> Result<()> {
+		// -- Setup & Fixtures
+		let request = WebFetchRequest::new("https://example.com/docs")
+			.with_llms(true)
+			.with_follow_links(true)
+			.with_max_depth(2);
+
+		// -- Check
+		assert_eq!(request.options.llms, Some(true));
+		assert!(request.options.llms_enabled());
+		assert!(request.options.follow_links);
+		assert_eq!(request.options.max_depth, 2);
+
+		Ok(())
+	}
+
+	#[test]
+	fn test_fetchr_types_web_options_llms_enabled_tri_state() -> Result<()> {
+		// -- Setup & Fixtures
+		let default_options = WebFetchOptions::default();
+		let explicit_false = WebFetchOptions::default().with_llms(false);
+		let explicit_true = WebFetchOptions::default().with_llms(true);
+
+		// -- Check
+		assert!(!default_options.llms_enabled());
+		assert!(!explicit_false.llms_enabled());
+		assert!(explicit_true.llms_enabled());
+
+		Ok(())
+	}
+
+	#[test]
+	fn test_fetchr_types_manifest_options_llms_differentiates() -> Result<()> {
+		// -- Setup & Fixtures
+		let req_without_llms = WebFetchRequest::new("https://example.com");
+		let req_with_llms = WebFetchRequest::new("https://example.com").with_llms(true);
+
+		let options_without = FetchManifestOptions::from(&req_without_llms);
+		let options_with = FetchManifestOptions::from(&req_with_llms);
+
+		// -- Check
+		assert_ne!(options_without, options_with);
 
 		Ok(())
 	}
@@ -417,6 +498,7 @@ mod tests {
 			.with_same_host_only(true)
 			.with_follow_links(true)
 			.with_max_depth(2)
+			.with_llms(true)
 			.with_include(["*.html"]);
 		let web_options = FetchManifestOptions::from(&web_req);
 
@@ -434,6 +516,7 @@ mod tests {
 
 		assert!(web_json.contains(r#""type":"web""#));
 		assert!(web_json.contains(r#""max_depth":2"#));
+		assert!(web_json.contains(r#""llms":true"#));
 		assert_eq!(web_deserialized, web_options);
 
 		Ok(())

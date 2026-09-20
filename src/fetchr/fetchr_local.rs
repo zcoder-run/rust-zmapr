@@ -824,6 +824,7 @@ mod tests {
 				same_host_only: true,
 				follow_links: false,
 				max_depth: 0,
+				llms: None,
 			},
 			artifact_root: "src".to_owned(),
 			items: Vec::new(),
