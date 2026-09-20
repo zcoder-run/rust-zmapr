@@ -1,5 +1,4 @@
-use super::fetchr::{execute_local_fetch, load_prior_local_fetch};
-use super::options::FetchOptions;
+use crate::fetchr::{FetchOptions, execute_http_fetch, execute_local_fetch, load_prior_local_fetch};
 use super::progress::{ProcessProgress, ProcessProgressPublisher};
 use super::source::ContentSource;
 use super::{ProcessContentOptions, ProcessFailure, ProcessItem, ProcessStage};
@@ -146,9 +145,7 @@ async fn execute_fetch_stage(context: &WorkflowContext, options: &FetchOptions) 
 	});
 	let result = match &context.source {
 		ContentSource::LocalPath(source) => execute_local_fetch(source, options, context).await,
-		ContentSource::Website(_) => Err(Error::Unsupported(
-			"website Fetch execution is not implemented yet".into(),
-		)),
+		ContentSource::Website(source) => execute_http_fetch(source, options, context).await,
 	};
 
 	if result.is_ok() {

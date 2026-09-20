@@ -1,4 +1,4 @@
-use super::fetchr::validate_source;
+use crate::fetchr::{validate_source, validate_website_source};
 use super::pipeline::{StageOutput, WorkflowContext, run_pipeline};
 use super::progress::{ProcessProgressPublisher, new_completion_channel, new_progress_channel};
 use super::response::{ProcessContentHandle, ProcessContentOutput};
@@ -102,6 +102,12 @@ fn validate_request(source: &ContentSource, options: &ProcessContentOptions) -> 
 		validate_source(local_source)?;
 	}
 
+	if options.fetch.is_some()
+		&& let ContentSource::Website(website_source) = source
+	{
+		validate_website_source(website_source)?;
+	}
+
 	if let Some(ai_augment) = &options.ai_augment {
 		validate_ai_configuration(ProcessStage::AiAugment, &ai_augment.provider, &ai_augment.model)?;
 	}
@@ -129,10 +135,6 @@ fn validate_request(source: &ContentSource, options: &ProcessContentOptions) -> 
 				"website sources require Fetch to be enabled".into(),
 			));
 		}
-
-		return Err(Error::Unsupported(
-			"website Fetch execution is not implemented yet".into(),
-		));
 	}
 
 	Ok(layout)

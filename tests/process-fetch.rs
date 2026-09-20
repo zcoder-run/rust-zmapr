@@ -2,8 +2,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 use zmapr::{
-	AiAugmentOptions, ContentMapOptions, ContentSource, Error, FetchOptions, ProcessContentOptions, ProcessStage,
-	process_content,
+	AiAugmentOptions, ContentMapOptions, ContentSource, Error, FetchOptions, ProcessContentOptions, ProcessProgress,
+	ProcessStage, process_content,
 };
 
 type Result<T> = core::result::Result<T, Box<dyn std::error::Error>>; // For tests.
@@ -233,9 +233,9 @@ async fn test_process_fetch_invalid_local_source_returns_structured_error() -> R
 }
 
 #[tokio::test]
-async fn test_process_fetch_website_source_remains_unsupported() -> Result<()> {
+async fn test_process_fetch_website_source_invalid_url_returns_structured_error() -> Result<()> {
 	// -- Setup & Fixtures
-	let root = fixture_root("test_process_fetch_website_source_remains_unsupported")?;
+	let root = fixture_root("test_process_fetch_website_source_invalid_url_returns_structured_error")?;
 	let destination = root.join("destination");
 	let options = ProcessContentOptions::new(path_text(&destination)).with_fetch(FetchOptions {
 		same_host_only: true,
@@ -243,10 +243,14 @@ async fn test_process_fetch_website_source_remains_unsupported() -> Result<()> {
 	});
 
 	// -- Exec
-	let result = process_content(ContentSource::website("https://example.com"), options).await;
+	let result = process_content(ContentSource::website("not-a-valid-url"), options).await;
 
 	// -- Check
-	assert!(matches!(result, Err(Error::Unsupported(_))));
+	let error = match result {
+		Err(error) => error,
+		Ok(_) => return Err("invalid website source should fail before starting".into()),
+	};
+	assert!(matches!(error, Error::InvalidConfiguration(_)));
 	assert!(!destination.exists());
 
 	Ok(())
@@ -287,7 +291,266 @@ async fn test_process_fetch_deferred_ai_stages_remain_unsupported() -> Result<()
 	Ok(())
 }
 
+#[tokio::test]
+async fn test_process_fetch_website_crawls_and_reports_progress() -> Result<()> {
+	// -- Setup & Fixtures
+	let (port, _shutdown) = spawn_mock_server(|path| match path {
+		"/site/" | "/site/index.html" => (
+			"200 OK",
+			"text/html; charset=utf-8",
+			"<html><body><h1>Home</h1><a href=\"page1.html\">P1</a><a href=\"/site/page2.html\">P2</a><a href=\"http://example.com/out.html\">Out</a></body></html>",
+		),
+		"/site/page1.html" => (
+			"200 OK",
+			"text/html; charset=utf-8",
+			"<html><body><h1>Page 1</h1><a href=\"sub/page3.html\">P3</a></body></html>",
+		),
+		"/site/page2.html" => (
+			"200 OK",
+			"text/html; charset=utf-8",
+			"<html><body><h1>Page 2</h1></body></html>",
+		),
+		"/site/sub/page3.html" => (
+			"200 OK",
+			"text/html; charset=utf-8",
+			"<html><body><h1>Page 3</h1></body></html>",
+		),
+		_ => ("404 Not Found", "text/plain", "Not Found"),
+	})
+	.await?;
+
+	let root = fixture_root("test_process_fetch_website_crawls_and_reports_progress")?;
+	let destination = root.join("destination");
+	let start_url = format!("http://127.0.0.1:{port}/site/");
+
+	let options = ProcessContentOptions::new(path_text(&destination)).with_fetch(FetchOptions {
+		follow_links: true,
+		max_depth: 2,
+		same_host_only: true,
+		..FetchOptions::default()
+	});
+
+	// -- Exec
+	let mut handle = process_content(ContentSource::website(&start_url), options).await?;
+	let mut progress_rx = handle
+		.take_progress_rx()
+		.ok_or("Fetch should provide a progress receiver")?;
+
+	let progress_task = tokio::spawn(async move {
+		let mut events = Vec::new();
+		while let Ok(event) = progress_rx.recv().await {
+			events.push(event);
+		}
+		events
+	});
+
+	let output = handle.wait_output().await?;
+	let progress_events = progress_task.await?;
+
+	// -- Check
+	assert_eq!(output.completed_items.len(), 4);
+	assert!(output.failures.is_empty());
+
+	let completed_sources = output
+		.completed_items
+		.iter()
+		.map(|item| item.source.as_str())
+		.collect::<Vec<_>>();
+	assert_eq!(
+		completed_sources,
+		vec!["index.html", "page1.html", "page2.html", "sub/page3.html"]
+	);
+
+	let fetch_dir = destination.join(".zmapr").join("fetch");
+	assert!(fetch_dir.join("index.html").is_file());
+	assert!(fetch_dir.join("page1.html").is_file());
+	assert!(fetch_dir.join("page2.html").is_file());
+	assert!(fetch_dir.join("sub/page3.html").is_file());
+
+	let manifest_path = output
+		.manifest_path
+		.as_ref()
+		.ok_or("Website fetch should publish a manifest")?;
+	assert!(manifest_path.is_file());
+	let manifest: serde_json::Value = serde_json::from_str(&fs::read_to_string(manifest_path.as_std_path())?)?;
+	assert_eq!(
+		manifest.get("complete").and_then(serde_json::Value::as_bool),
+		Some(true)
+	);
+
+	let has_stage_started = progress_events
+		.iter()
+		.any(|event| matches!(event, ProcessProgress::StageStarted { stage: ProcessStage::Fetch }));
+	let has_stage_completed = progress_events
+		.iter()
+		.any(|event| matches!(event, ProcessProgress::StageCompleted { stage: ProcessStage::Fetch }));
+	let item_completed_count = progress_events
+		.iter()
+		.filter(|event| matches!(event, ProcessProgress::ItemCompleted { .. }))
+		.count();
+
+	assert!(has_stage_started);
+	assert!(has_stage_completed);
+	assert_eq!(item_completed_count, 4);
+
+	Ok(())
+}
+
+#[tokio::test]
+async fn test_process_fetch_website_respects_max_depth() -> Result<()> {
+	// -- Setup & Fixtures
+	let (port, _shutdown) = spawn_mock_server(|path| match path {
+		"/docs/" | "/docs/index.html" => (
+			"200 OK",
+			"text/html; charset=utf-8",
+			"<html><body><a href=\"level1.html\">L1</a></body></html>",
+		),
+		"/docs/level1.html" => (
+			"200 OK",
+			"text/html; charset=utf-8",
+			"<html><body><a href=\"level2.html\">L2</a></body></html>",
+		),
+		"/docs/level2.html" => (
+			"200 OK",
+			"text/html; charset=utf-8",
+			"<html><body><a href=\"level3.html\">L3</a></body></html>",
+		),
+		"/docs/level3.html" => (
+			"200 OK",
+			"text/html; charset=utf-8",
+			"<html><body>End</body></html>",
+		),
+		_ => ("404 Not Found", "text/plain", "Not Found"),
+	})
+	.await?;
+
+	let root = fixture_root("test_process_fetch_website_respects_max_depth")?;
+	let destination = root.join("destination");
+	let start_url = format!("http://127.0.0.1:{port}/docs/");
+
+	let options = ProcessContentOptions::new(path_text(&destination)).with_fetch(FetchOptions {
+		follow_links: true,
+		max_depth: 1,
+		same_host_only: true,
+		..FetchOptions::default()
+	});
+
+	// -- Exec
+	let handle = process_content(ContentSource::website(&start_url), options).await?;
+	let output = handle.wait_output().await?;
+
+	// -- Check
+	assert_eq!(output.completed_items.len(), 2);
+	assert!(output.failures.is_empty());
+
+	let completed_sources = output
+		.completed_items
+		.iter()
+		.map(|item| item.source.as_str())
+		.collect::<Vec<_>>();
+	assert_eq!(completed_sources, vec!["index.html", "level1.html"]);
+
+	let fetch_dir = destination.join(".zmapr").join("fetch");
+	assert!(fetch_dir.join("index.html").is_file());
+	assert!(fetch_dir.join("level1.html").is_file());
+	assert!(!fetch_dir.join("level2.html").exists());
+
+	Ok(())
+}
+
+#[tokio::test]
+async fn test_process_fetch_website_records_failures_for_broken_links() -> Result<()> {
+	// -- Setup & Fixtures
+	let (port, _shutdown) = spawn_mock_server(|path| match path {
+		"/site/" | "/site/index.html" => (
+			"200 OK",
+			"text/html; charset=utf-8",
+			"<html><body><a href=\"broken.html\">Broken</a></body></html>",
+		),
+		_ => ("404 Not Found", "text/plain", "Not Found"),
+	})
+	.await?;
+
+	let root = fixture_root("test_process_fetch_website_records_failures_for_broken_links")?;
+	let destination = root.join("destination");
+	let start_url = format!("http://127.0.0.1:{port}/site/");
+
+	let options = ProcessContentOptions::new(path_text(&destination)).with_fetch(FetchOptions {
+		follow_links: true,
+		max_depth: 1,
+		same_host_only: true,
+		..FetchOptions::default()
+	});
+
+	// -- Exec
+	let handle = process_content(ContentSource::website(&start_url), options).await?;
+	let output = handle.wait_output().await?;
+
+	// -- Check
+	assert_eq!(output.completed_items.len(), 1);
+	assert_eq!(output.failures.len(), 1);
+
+	let failure = output
+		.failures
+		.first()
+		.ok_or("Output should contain one failure")?;
+	assert_eq!(failure.item.source, "broken.html");
+	assert_eq!(failure.item.stage, ProcessStage::Fetch);
+	assert!(failure.message.contains("404"));
+
+	let manifest_path = output
+		.manifest_path
+		.as_ref()
+		.ok_or("Output should include a manifest")?;
+	let manifest: serde_json::Value = serde_json::from_str(&fs::read_to_string(manifest_path.as_std_path())?)?;
+	assert_eq!(
+		manifest.get("complete").and_then(serde_json::Value::as_bool),
+		Some(false)
+	);
+
+	Ok(())
+}
+
 // region:    --- Support
+
+async fn spawn_mock_server<H>(handler: H) -> Result<(u16, tokio::sync::oneshot::Sender<()>)>
+where
+	H: Fn(&str) -> (&'static str, &'static str, &'static str) + Send + Sync + 'static,
+{
+	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+	let port = listener.local_addr()?.port();
+	let (shutdown_tx, mut shutdown_rx) = tokio::sync::oneshot::channel();
+	let handler = std::sync::Arc::new(handler);
+
+	tokio::spawn(async move {
+		loop {
+			tokio::select! {
+				_ = &mut shutdown_rx => break,
+				accepted = listener.accept() => {
+					let Ok((mut socket, _)) = accepted else { break };
+					let handler = handler.clone();
+					tokio::spawn(async move {
+						use tokio::io::{AsyncReadExt, AsyncWriteExt};
+						let mut buf = vec![0u8; 2048];
+						let n = socket.read(&mut buf).await.unwrap_or(0);
+						let req = String::from_utf8_lossy(&buf[..n]);
+						let first_line = req.lines().next().unwrap_or("");
+						let path = first_line.split_whitespace().nth(1).unwrap_or("/");
+
+						let (status, content_type, body) = handler(path);
+						let resp = format!(
+							"HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+							body.len()
+						);
+						let _ = socket.write_all(resp.as_bytes()).await;
+					});
+				}
+			}
+		}
+	});
+
+	Ok((port, shutdown_tx))
+}
 
 fn fixture_root(test_name: &str) -> Result<PathBuf> {
 	let timestamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();

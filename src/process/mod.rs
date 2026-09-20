@@ -1,16 +1,14 @@
 // region:    --- Modules
 
-mod fetchr;
-mod mapr;
 mod options;
-mod pipeline;
+pub(crate) mod pipeline;
 mod process_impl;
-mod progress;
+pub(crate) mod progress;
 mod response;
 mod source;
-mod state;
+pub(crate) mod state;
 
-pub use mapr::*;
+pub use crate::mapr::ContentMap;
 pub use options::*;
 pub use process_impl::*;
 pub use progress::{ProcessProgress, ProgressRx};

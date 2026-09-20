@@ -72,4 +72,16 @@ impl From<&String> for WebRequest {
 	}
 }
 
+impl From<reqwest::Url> for WebRequest {
+	fn from(url: reqwest::Url) -> Self {
+		Self::new(url.as_str())
+	}
+}
+
+impl From<&reqwest::Url> for WebRequest {
+	fn from(url: &reqwest::Url) -> Self {
+		Self::new(url.as_str())
+	}
+}
+
 // endregion: --- Froms

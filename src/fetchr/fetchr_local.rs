@@ -1,16 +1,18 @@
 use super::fetchr_types::{
 	FetchManifest, FetchManifestItem, FetchManifestOptions, LocalFetchDiscovery, LocalFetchItem, LocalSourceKind,
 };
-use crate::process::options::FetchOptions;
+use super::support::{
+	ensure_parent, hash_file, media_type_for, normalize_manifest_relative_path, normalize_relative_path,
+	path_to_string, paths_equivalent, source_identity, write_fetch_manifest,
+};
+use crate::fetchr::FetchOptions;
 use crate::process::pipeline::{ArtifactItem, ArtifactSet, StageOutput, WorkflowContext};
-use crate::process::progress::ProcessProgress;
-use crate::process::response::{ProcessFailure, ProcessItem, ProcessStage};
-use crate::process::source::LocalContentSource;
+use crate::process::{LocalContentSource, ProcessFailure, ProcessItem, ProcessProgress, ProcessStage};
 use crate::{Error, Result};
 use sha2::{Digest, Sha256};
-use simple_fs::{SPath, ensure_dir, list_files, read_to_string};
-use std::fs::{copy, rename, write};
-use std::path::{Component, Path};
+use simple_fs::{SPath, ensure_dir, list_files};
+use std::fs::copy;
+use std::path::Path;
 use std::sync::Arc;
 use tokio::sync::Semaphore;
 
@@ -441,7 +443,7 @@ fn read_fetch_manifest(path: &SPath) -> Result<FetchManifest> {
 		return Err(Error::InvalidCache(format!("Fetch manifest does not exist: {path}")));
 	}
 
-	let content = read_to_string(path)
+	let content = simple_fs::read_to_string(path)
 		.map_err(|error| Error::MalformedState(format!("failed to read Fetch manifest {path}: {error}")))?;
 
 	serde_json::from_str(&content)
@@ -453,7 +455,7 @@ fn read_fetch_manifest_for_resume(path: &SPath) -> Option<FetchManifest> {
 		return None;
 	}
 
-	let content = read_to_string(path).ok()?;
+	let content = simple_fs::read_to_string(path).ok()?;
 	serde_json::from_str(&content).ok()
 }
 
@@ -498,11 +500,6 @@ fn artifact_root_for(source_path: &SPath, options: &FetchOptions, context: &Work
 	}
 }
 
-fn normalize_manifest_relative_path(value: &str) -> Result<String> {
-	let value = value.replace('\\', "/");
-	normalize_relative_path(Path::new(&value))
-}
-
 fn copy_local_file(source: &SPath, destination: &SPath) -> Result<()> {
 	ensure_parent(destination)?;
 	copy(source.as_std_path(), destination.as_std_path()).map_err(|error| {
@@ -522,37 +519,6 @@ fn manifest_item(item: &LocalFetchItem, artifact_path: Option<&SPath>) -> Result
 		media_type: item.media_type.clone(),
 		content_hash: item.content_hash.clone(),
 	})
-}
-
-fn write_fetch_manifest(path: &SPath, manifest: &FetchManifest) -> Result<()> {
-	ensure_parent(path)?;
-	let manifest_json = serde_json::to_string_pretty(manifest)
-		.map_err(|error| Error::MalformedState(format!("failed to serialize Fetch manifest: {error}")))?;
-	let temporary_path = SPath::from(format!("{path}.tmp"));
-	let manifest_content = format!("{manifest_json}\n");
-	write(temporary_path.as_std_path(), manifest_content.as_bytes())
-		.map_err(|error| Error::MalformedState(format!("failed to write Fetch manifest {temporary_path}: {error}")))?;
-	rename(temporary_path.as_std_path(), path.as_std_path())
-		.map_err(|error| Error::MalformedState(format!("failed to replace Fetch manifest {path}: {error}")))?;
-	Ok(())
-}
-
-fn ensure_parent(path: &SPath) -> Result<()> {
-	let path_ref: &Path = path.as_ref();
-	let parent = path_ref
-		.parent()
-		.ok_or_else(|| Error::MalformedState(format!("workflow path has no parent: {path}")))?;
-	let parent = SPath::from(parent.to_string_lossy().into_owned());
-	ensure_dir(&parent)?;
-	Ok(())
-}
-
-fn path_to_string(path: &SPath) -> Result<String> {
-	let path_ref: &Path = path.as_ref();
-	path_ref
-		.to_str()
-		.map(|value| value.replace('\\', "/"))
-		.ok_or_else(|| Error::MalformedState("workflow path is not valid UTF-8".to_owned()))
 }
 
 fn validate_source_kind(path: &SPath, identity: &str) -> Result<LocalSourceKind> {
@@ -691,75 +657,6 @@ fn relative_file_name(path: &SPath) -> Result<String> {
 		.ok_or_else(|| Error::InvalidConfiguration("local file source has no file name".to_owned()))?;
 
 	normalize_relative_path(Path::new(file_name))
-}
-
-fn normalize_relative_path(path: &Path) -> Result<String> {
-	if path.is_absolute() || path.components().any(|component| component == Component::ParentDir) {
-		return Err(Error::InvalidConfiguration(
-			"local source produced an invalid relative path".to_owned(),
-		));
-	}
-
-	let value = path
-		.to_str()
-		.ok_or_else(|| Error::InvalidConfiguration("local source path is not valid UTF-8".to_owned()))?;
-	let value = value.replace('\\', "/");
-	let value = value.strip_prefix("./").unwrap_or(&value);
-
-	if value.is_empty() || value == "." {
-		return Err(Error::InvalidConfiguration(
-			"local source produced an empty relative path".to_owned(),
-		));
-	}
-
-	Ok(value.to_owned())
-}
-
-fn source_identity(path: &SPath) -> Result<String> {
-	let path: &Path = path.as_ref();
-	let value = path
-		.to_str()
-		.ok_or_else(|| Error::InvalidConfiguration("local source path is not valid UTF-8".to_owned()))?;
-
-	Ok(value.replace('\\', "/"))
-}
-
-fn paths_equivalent(left: &Path, right: &Path) -> bool {
-	left.components().eq(right.components())
-}
-
-fn hash_file(path: &SPath) -> Result<String> {
-	let contents = read_to_string(path)?;
-	let digest = Sha256::digest(contents.as_bytes());
-
-	Ok(format!("{digest:x}"))
-}
-
-fn media_type_for(path: &Path) -> Option<String> {
-	let extension = path.extension()?.to_str()?.to_ascii_lowercase();
-	let media_type = match extension.as_str() {
-		"html" | "htm" => "text/html",
-		"md" | "markdown" => "text/markdown",
-		"txt" => "text/plain",
-		"rs" => "text/rust",
-		"json" => "application/json",
-		"toml" => "application/toml",
-		"yaml" | "yml" => "application/yaml",
-		"xml" => "application/xml",
-		"csv" => "text/csv",
-		"css" => "text/css",
-		"js" => "text/javascript",
-		"ts" => "text/typescript",
-		"png" => "image/png",
-		"jpg" | "jpeg" => "image/jpeg",
-		"gif" => "image/gif",
-		"svg" => "image/svg+xml",
-		"pdf" => "application/pdf",
-		"zip" => "application/zip",
-		_ => return None,
-	};
-
-	Some(media_type.to_owned())
 }
 
 // endregion:    --- Support
