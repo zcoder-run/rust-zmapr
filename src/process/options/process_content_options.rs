@@ -1,4 +1,5 @@
-use super::{AiAugmentOptions, ContentMapOptions, FetchOptions, SanitizeOptions};
+use super::{AiAugmentOptions, ContentMapOptions, SanitizeOptions};
+use crate::fetchr::FetchRequest;
 use simple_fs::SPath;
 
 // region:    --- Types
@@ -8,7 +9,7 @@ pub struct ProcessContentOptions {
 	/// Root directory for cache, stage outputs, manifests, and maps.
 	pub destination: SPath,
 	/// Enables source selection and acquisition when present.
-	pub fetch: Option<FetchOptions>,
+	pub fetch: Option<FetchRequest>,
 	/// Enables mechanical content preparation when present.
 	pub sanitize: Option<SanitizeOptions>,
 	/// Enables AI cleanup and formatting when present.
@@ -46,8 +47,8 @@ impl ProcessContentOptions {
 
 impl ProcessContentOptions {
 	/// Enables and configures Fetch.
-	pub fn with_fetch(mut self, options: FetchOptions) -> Self {
-		self.fetch = Some(options);
+	pub fn with_fetch(mut self, request: impl Into<FetchRequest>) -> Self {
+		self.fetch = Some(request.into());
 		self
 	}
 

@@ -9,9 +9,8 @@ The initial usable workflow is local Fetch with optional Sanitize:
 
 ```rust
 let handle = process_content(
-    ContentSource::local_path("docs"),
     ProcessContentOptions::new("target/zmapr-docs")
-        .with_fetch(FetchOptions::default())
+        .with_fetch(LocalFetchRequest::new("docs"))
         .with_sanitize(SanitizeOptions::default()),
 )
 .await?;
@@ -22,7 +21,6 @@ The public entry point is:
 
 ```rust
 pub async fn process_content(
-    source: impl Into<ContentSource>,
     options: ProcessContentOptions,
 ) -> Result<ProcessContentHandle>;
 ```
@@ -37,7 +35,7 @@ impl ProcessContentHandle {
 }
 ```
 
-Website Fetch, AI Augment, and AI Content Map are modeled by the public API but remain deferred until their implementations are available.
+AI Augment and AI Content Map are modeled by the public API but remain deferred until their implementations are available.
 
 ## Architecture
 
@@ -62,26 +60,26 @@ Sources identify where Fetch obtains content:
 ```rust
 pub enum ContentSource {
     LocalPath(LocalContentSource),
-    Website(WebsiteContentSource),
+    Web(WebContentSource),
 }
 
 pub struct LocalContentSource {
     pub path: SPath,
 }
 
-pub struct WebsiteContentSource {
+pub struct WebContentSource {
     pub url: String,
 }
 ```
 
-Convenience constructors are provided through `ContentSource::local_path` and `ContentSource::website`. Local paths also convert from `SPath`. String-to-source conversion is intentionally not provided because a string could represent either a local path or a URL.
+`ContentSource` remains public to represent sources abstractly, and is resolved when inspecting workflow contexts or loading prior manifests. Requests bind their specific source payload (`LocalContentSource` or `WebContentSource`) directly. Convenience constructors are provided through `ContentSource::local` and `ContentSource::web`, as well as `LocalFetchRequest::new` and `WebFetchRequest::new`.
 
 ## Workflow options
 
 ```rust
 pub struct ProcessContentOptions {
     pub destination: SPath,
-    pub fetch: Option<FetchOptions>,
+    pub fetch: Option<FetchRequest>,
     pub sanitize: Option<SanitizeOptions>,
     pub ai_augment: Option<AiAugmentOptions>,
     pub content_map: Option<ContentMapOptions>,
@@ -99,21 +97,44 @@ An empty workflow is invalid. `max_concurrency` must be greater than zero.
 ### Fetch
 
 ```rust
-pub struct FetchOptions {
+pub enum FetchRequest {
+    Local(LocalFetchRequest),
+    Web(WebFetchRequest),
+}
+
+pub struct FetchCommonOptions {
     pub include: Vec<String>,
     pub exclude: Vec<String>,
+}
+
+pub struct LocalFetchRequest {
+    pub source: LocalContentSource,
+    pub common: FetchCommonOptions,
+    pub options: LocalFetchOptions,
+}
+
+pub struct LocalFetchOptions {
     pub copy_local_files: bool,
+}
+
+pub struct WebFetchRequest {
+    pub source: WebContentSource,
+    pub common: FetchCommonOptions,
+    pub options: WebFetchOptions,
+}
+
+pub struct WebFetchOptions {
     pub same_host_only: bool,
-    pub max_depth: usize,
     pub follow_links: bool,
+    pub max_depth: usize,
 }
 ```
 
-Fetch selects local files or website paths. Include patterns are applied before exclusions, exclusions take precedence, and selected paths are sorted by stable relative path. Local directory traversal is recursive and skips symbolic links.
+Fetch selects local files or crawls websites. Common include and exclude patterns are shared across sources: include patterns are applied before exclusions, exclusions take precedence, and selected paths are sorted by stable relative path. Local directory traversal is recursive and skips symbolic links.
 
 For local sources, Fetch either copies files below `.zmapr/fetch` or retains their original paths according to `copy_local_files`. It records source-relative paths and stable content hashes.
 
-Website Fetch is planned to crawl from the starting URL, optionally following links while respecting host and depth settings.
+Website Fetch crawls from the starting URL, scoping candidate links to the starting URL base folder, and optionally following links while respecting `same_host_only` and `max_depth` settings.
 
 ### Sanitize
 
@@ -201,7 +222,7 @@ Validation occurs before destination mutation or stage execution. It checks:
 - At least one stage is enabled.
 - Concurrency is nonzero.
 - AI stages have nonempty provider and model values.
-- Website sources have Fetch enabled.
+- Source path or web URL is structurally valid.
 - Downstream processing without Fetch has a valid existing Fetch cache and manifest.
 - Deferred stages return structured `Unsupported` errors.
 
@@ -283,9 +304,10 @@ The first complete vertical slice is:
 - Deterministic include and exclude selection.
 - Optional copying into the Fetch cache.
 - Stable source hashes.
+- Website Fetch with URL base folder scoping, link extraction, and depth limits.
 - Optional UTF-8 text and HTML Sanitize.
 - Fetch-only and Fetch-plus-Sanitize responses.
-- Structured errors for Website Fetch and both AI stages.
+Structured errors for AI Augment and AI Content Map stages.
 
 The public contracts for Website Fetch, AI Augment, AI Content Map, manifests, journals, and complete resume behavior are established before their full execution is implemented.
 

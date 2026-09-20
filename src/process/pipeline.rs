@@ -1,7 +1,7 @@
 use super::progress::{ProcessProgress, ProcessProgressPublisher};
 use super::source::ContentSource;
 use super::{ProcessContentOptions, ProcessFailure, ProcessItem, ProcessStage};
-use crate::fetchr::{FetchOptions, execute_http_fetch, execute_local_fetch, load_prior_local_fetch};
+use crate::fetchr::{FetchRequest, execute_http_fetch, execute_local_fetch, load_prior_local_fetch};
 use crate::{Error, Result};
 use simple_fs::SPath;
 use std::future::Future;
@@ -11,7 +11,7 @@ use std::pin::Pin;
 
 #[derive(Debug, Clone)]
 pub(crate) struct WorkflowContext {
-	pub(crate) source: ContentSource,
+	pub(crate) source: Option<ContentSource>,
 	pub(crate) destination: SPath,
 	pub(crate) fetch_cache: SPath,
 	pub(crate) sanitize_output: SPath,
@@ -98,8 +98,8 @@ impl ProcessingStage for DeferredStage {
 // region:    --- Pipeline
 
 pub(crate) async fn run_pipeline(context: &WorkflowContext, options: &ProcessContentOptions) -> Result<StageOutput> {
-	let mut output = if let Some(fetch_options) = options.fetch.as_ref() {
-		execute_fetch_stage(context, fetch_options).await?
+	let mut output = if let Some(fetch_request) = options.fetch.as_ref() {
+		execute_fetch_stage(context, fetch_request).await?
 	} else if requires_prior_fetch(options) {
 		StageOutput::passthrough(load_prior_local_fetch(context)?)
 	} else {
@@ -139,13 +139,13 @@ pub(crate) async fn run_pipeline(context: &WorkflowContext, options: &ProcessCon
 	Ok(output)
 }
 
-async fn execute_fetch_stage(context: &WorkflowContext, options: &FetchOptions) -> Result<StageOutput> {
+async fn execute_fetch_stage(context: &WorkflowContext, request: &FetchRequest) -> Result<StageOutput> {
 	context.progress.publish(ProcessProgress::StageStarted {
 		stage: ProcessStage::Fetch,
 	});
-	let result = match &context.source {
-		ContentSource::LocalPath(source) => execute_local_fetch(source, options, context).await,
-		ContentSource::Web(source) => execute_http_fetch(source, options, context).await,
+	let result = match request {
+		FetchRequest::Local(local_request) => execute_local_fetch(local_request, context).await,
+		FetchRequest::Web(web_request) => execute_http_fetch(web_request, context).await,
 	};
 
 	if result.is_ok() {

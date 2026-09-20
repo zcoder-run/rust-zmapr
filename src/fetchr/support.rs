@@ -1,5 +1,5 @@
 use super::fetchr_types::FetchManifest;
-use crate::fetchr::FetchOptions;
+use crate::fetchr::FetchCommonOptions;
 use crate::{Error, Result};
 use sha2::{Digest, Sha256};
 use simple_fs::{SPath, ensure_dir, read_to_string};
@@ -170,11 +170,11 @@ fn segment_matches(segment: &str, pattern: &str) -> bool {
 	current.ends_with(last)
 }
 
-pub(crate) fn is_path_selected(relative_path: &str, options: &FetchOptions) -> bool {
+pub(crate) fn is_path_selected(relative_path: &str, common: &FetchCommonOptions) -> bool {
 	let mut include_patterns = Vec::new();
-	let mut exclude_patterns = options.exclude.clone();
+	let mut exclude_patterns = common.exclude.clone();
 
-	for pat in &options.include {
+	for pat in &common.include {
 		if let Some(neg) = pat.strip_prefix('!') {
 			exclude_patterns.push(neg.to_owned());
 		} else {
@@ -230,11 +230,10 @@ mod tests {
 	#[test]
 	fn test_fetchr_support_is_path_selected_rules() -> Result<()> {
 		// -- Setup & Fixtures
-		let default_options = FetchOptions::default();
-		let filter_options = FetchOptions {
+		let default_options = FetchCommonOptions::default();
+		let filter_options = FetchCommonOptions {
 			include: vec!["docs/**".to_owned()],
 			exclude: vec!["docs/secret.html".to_owned()],
-			..FetchOptions::default()
 		};
 
 		// -- Exec & Check

@@ -1,6 +1,6 @@
-use super::fetchr_types::{FetchManifest, FetchManifestItem, FetchManifestOptions};
+use super::fetchr_types::{FETCH_MANIFEST_VERSION, FetchManifest, FetchManifestItem, FetchManifestOptions};
 use super::support::{ensure_parent, is_path_selected, media_type_for, path_to_string, write_fetch_manifest};
-use crate::fetchr::FetchOptions;
+use crate::fetchr::{WebFetchOptions, WebFetchRequest};
 use crate::process::pipeline::{ArtifactItem, ArtifactSet, StageOutput, WorkflowContext};
 use crate::process::{ProcessFailure, ProcessItem, ProcessProgress, ProcessStage, WebContentSource};
 use crate::webc::{WebClient, new_client};
@@ -17,8 +17,7 @@ use tokio::sync::Semaphore;
 // region:    --- Execution
 
 pub(crate) async fn execute_http_fetch(
-	source: &WebContentSource,
-	options: &FetchOptions,
+	request: &WebFetchRequest,
 	context: &WorkflowContext,
 ) -> Result<StageOutput> {
 	if context.max_concurrency == 0 {
@@ -27,12 +26,12 @@ pub(crate) async fn execute_http_fetch(
 		));
 	}
 
-	let mut start_url = Url::parse(&source.url)
-		.map_err(|err| Error::InvalidConfiguration(format!("invalid web URL '{}': {err}", source.url)))?;
+	let mut start_url = Url::parse(&request.source.url)
+		.map_err(|err| Error::InvalidConfiguration(format!("invalid web URL '{}': {err}", request.source.url)))?;
 	if start_url.scheme() != "http" && start_url.scheme() != "https" {
 		return Err(Error::InvalidConfiguration(format!(
 			"web URL must use http or https scheme: {}",
-			source.url
+			request.source.url
 		)));
 	}
 	start_url.set_fragment(None);
@@ -87,7 +86,7 @@ pub(crate) async fn execute_http_fetch(
 					let relative_path = fetched.relative_path;
 					let source_url = fetched.url.as_str().to_owned();
 
-					if is_path_selected(&relative_path, options) {
+					if is_path_selected(&relative_path, &request.common) {
 						let artifact_path = artifact_root.join(&relative_path);
 						if let Err(err) = ensure_parent(&artifact_path) {
 							let failure = ProcessFailure {
@@ -162,7 +161,7 @@ pub(crate) async fn execute_http_fetch(
 						context.progress.publish(ProcessProgress::ItemSkipped { item: process_item });
 					}
 
-					if is_depth_allowed(current_depth + 1, options)
+					if is_depth_allowed(current_depth + 1, &request.options)
 						&& fetched
 							.media_type
 							.as_deref()
@@ -171,7 +170,7 @@ pub(crate) async fn execute_http_fetch(
 						&& let Ok(links) = extract_links(html_text, &fetched.url)
 					{
 								for link in links {
-									if is_url_in_scope(&link, &base_folder_url, options)
+									if is_url_in_scope(&link, &base_folder_url, &request.options)
 										&& visited.insert(link.as_str().to_owned())
 									{
 										next_level.push(link);
@@ -207,11 +206,11 @@ pub(crate) async fn execute_http_fetch(
 	manifest_items.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
 
 	let manifest = FetchManifest {
-		version: 1,
+		version: FETCH_MANIFEST_VERSION,
 		complete: failures.is_empty(),
-		source: source.url.clone(),
-		source_path: source.url.clone(),
-		options: FetchManifestOptions::from(options),
+		source: request.source.url.clone(),
+		source_path: request.source.url.clone(),
+		options: FetchManifestOptions::from(request),
 		artifact_root: path_to_string(&artifact_root)?,
 		items: manifest_items,
 	};
@@ -328,7 +327,7 @@ pub(crate) fn compute_base_folder_url(url: &Url) -> Url {
 }
 
 /// Checks whether a candidate URL falls within the crawling scope.
-pub(crate) fn is_url_in_scope(url: &Url, base_folder_url: &Url, options: &FetchOptions) -> bool {
+pub(crate) fn is_url_in_scope(url: &Url, base_folder_url: &Url, options: &WebFetchOptions) -> bool {
 	if url.scheme() != "http" && url.scheme() != "https" {
 		return false;
 	}
@@ -349,7 +348,7 @@ pub(crate) fn is_url_in_scope(url: &Url, base_folder_url: &Url, options: &FetchO
 }
 
 /// Validates whether a given crawl depth is allowed by the fetch options.
-pub(crate) fn is_depth_allowed(depth: usize, options: &FetchOptions) -> bool {
+pub(crate) fn is_depth_allowed(depth: usize, options: &WebFetchOptions) -> bool {
 	if depth == 0 {
 		return true;
 	}
@@ -490,9 +489,9 @@ mod tests {
 	fn test_fetchr_http_is_url_in_scope_rules() -> Result<()> {
 		// -- Setup & Fixtures
 		let base = Url::parse("https://docs.typesafe.ai/doc/")?;
-		let options_same_host = FetchOptions {
+		let options_same_host = WebFetchOptions {
 			same_host_only: true,
-			..FetchOptions::default()
+			..WebFetchOptions::default()
 		};
 
 		let inside_sub = Url::parse("https://docs.typesafe.ai/doc/guide/intro.html")?;
@@ -514,15 +513,15 @@ mod tests {
 	#[test]
 	fn test_fetchr_http_is_depth_allowed_rules() -> Result<()> {
 		// -- Setup & Fixtures
-		let no_follow = FetchOptions {
+		let no_follow = WebFetchOptions {
 			follow_links: false,
 			max_depth: 3,
-			..FetchOptions::default()
+			..WebFetchOptions::default()
 		};
-		let follow_depth_2 = FetchOptions {
+		let follow_depth_2 = WebFetchOptions {
 			follow_links: true,
 			max_depth: 2,
-			..FetchOptions::default()
+			..WebFetchOptions::default()
 		};
 
 		// -- Exec & Check
@@ -647,19 +646,16 @@ mod tests {
 		let fetch_cache = dest.join(".zmapr/fetch");
 		let manifest = dest.join(".zmapr/manifest.json");
 
-		let source = WebContentSource::new(format!("http://127.0.0.1:{port}/"));
-		let options = FetchOptions {
-			follow_links: true,
-			max_depth: 2,
-			..FetchOptions::default()
-		};
+		let request = WebFetchRequest::new(format!("http://127.0.0.1:{port}/"))
+			.with_follow_links(true)
+			.with_max_depth(2);
 
 		let (tx, _rx) = new_progress_channel()?;
 		let state = Arc::new(ProcessStateStore::default());
 		let progress = crate::process::progress::ProcessProgressPublisher::new(tx, state);
 
 		let context = WorkflowContext {
-			source: crate::process::ContentSource::Web(source.clone()),
+			source: Some(crate::process::ContentSource::Web(request.source.clone())),
 			destination: dest.clone(),
 			fetch_cache: fetch_cache.clone(),
 			sanitize_output: dest.join(".zmapr/stages/sanitize"),
@@ -673,7 +669,7 @@ mod tests {
 		};
 
 		// -- Exec
-		let stage_output = execute_http_fetch(&source, &options, &context).await?;
+		let stage_output = execute_http_fetch(&request, &context).await?;
 
 		// -- Check
 		assert_eq!(stage_output.completed_items.len(), 2);

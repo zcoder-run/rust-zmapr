@@ -2,16 +2,15 @@ use super::pipeline::{StageOutput, WorkflowContext, run_pipeline};
 use super::progress::{ProcessProgressPublisher, new_completion_channel, new_progress_channel};
 use super::response::{ProcessContentHandle, ProcessContentOutput};
 use super::state::{ProcessQuery, new_process_state};
-use crate::fetchr::{validate_source, validate_web_source};
+use crate::fetchr::{FetchRequest, validate_source, validate_web_source};
 use crate::{ContentSource, Error, ProcessContentOptions, ProcessStage, Result};
 use simple_fs::SPath;
 
 pub async fn process_content(
-	source: impl Into<ContentSource>,
 	options: ProcessContentOptions,
 ) -> Result<ProcessContentHandle> {
-	let source = source.into();
-	let layout = validate_request(&source, &options)?;
+	let layout = validate_request(&options)?;
+	let source = resolve_source(&options, &layout);
 	let (progress_tx, progress_rx) = new_progress_channel()?;
 	let state = new_process_state();
 	let query = ProcessQuery::new(state.clone());
@@ -70,7 +69,7 @@ fn process_content_output(
 	}
 }
 
-fn validate_request(source: &ContentSource, options: &ProcessContentOptions) -> Result<WorkflowLayout> {
+fn validate_request(options: &ProcessContentOptions) -> Result<WorkflowLayout> {
 	if options.fetch.is_none()
 		&& options.sanitize.is_none()
 		&& options.ai_augment.is_none()
@@ -87,25 +86,15 @@ fn validate_request(source: &ContentSource, options: &ProcessContentOptions) -> 
 		));
 	}
 
-	if let Some(fetch) = &options.fetch
-		&& let ContentSource::Web(_) = source
-		&& !fetch.same_host_only
-	{
-		return Err(Error::InvalidConfiguration(
-			"website Fetch requires same_host_only to be enabled".into(),
-		));
-	}
-
-	if options.fetch.is_some()
-		&& let ContentSource::LocalPath(local_source) = source
-	{
-		validate_source(local_source)?;
-	}
-
-	if options.fetch.is_some()
-		&& let ContentSource::Web(website_source) = source
-	{
-		validate_web_source(website_source)?;
+	if let Some(fetch) = &options.fetch {
+		match fetch {
+			FetchRequest::Local(local_request) => {
+				validate_source(&local_request.source)?;
+			}
+			FetchRequest::Web(web_request) => {
+				validate_web_source(&web_request.source)?;
+			}
+		}
 	}
 
 	if let Some(ai_augment) = &options.ai_augment {
@@ -129,15 +118,26 @@ fn validate_request(source: &ContentSource, options: &ProcessContentOptions) -> 
 		)));
 	}
 
-	if let ContentSource::Web(_) = source
-		&& options.fetch.is_none()
-	{
-			return Err(Error::InvalidConfiguration(
-				"website sources require Fetch to be enabled".into(),
-			));
-	}
-
 	Ok(layout)
+}
+
+fn resolve_source(options: &ProcessContentOptions, layout: &WorkflowLayout) -> Option<ContentSource> {
+	match &options.fetch {
+		Some(FetchRequest::Local(local_request)) => Some(ContentSource::LocalPath(local_request.source.clone())),
+		Some(FetchRequest::Web(web_request)) => Some(ContentSource::Web(web_request.source.clone())),
+		None => read_prior_manifest_source(&layout.manifest),
+	}
+}
+
+fn read_prior_manifest_source(manifest_path: &SPath) -> Option<ContentSource> {
+	let content = simple_fs::read_to_string(manifest_path).ok()?;
+	let manifest: serde_json::Value = serde_json::from_str(&content).ok()?;
+	let source_str = manifest.get("source")?.as_str()?;
+	if source_str.starts_with("http://") || source_str.starts_with("https://") {
+		Some(ContentSource::web(source_str))
+	} else {
+		Some(ContentSource::local(source_str))
+	}
 }
 
 fn validate_ai_configuration(stage: ProcessStage, provider: &str, model: &str) -> Result<()> {

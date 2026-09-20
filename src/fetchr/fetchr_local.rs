@@ -1,11 +1,12 @@
 use super::fetchr_types::{
-	FetchManifest, FetchManifestItem, FetchManifestOptions, LocalFetchDiscovery, LocalFetchItem, LocalSourceKind,
+	FETCH_MANIFEST_VERSION, FetchManifest, FetchManifestItem, FetchManifestOptions, LocalFetchDiscovery,
+	LocalFetchItem, LocalSourceKind,
 };
 use super::support::{
 	ensure_parent, hash_file, media_type_for, normalize_manifest_relative_path, normalize_relative_path,
 	path_to_string, paths_equivalent, source_identity, write_fetch_manifest,
 };
-use crate::fetchr::FetchOptions;
+use crate::fetchr::{FetchCommonOptions, LocalFetchRequest};
 use crate::process::pipeline::{ArtifactItem, ArtifactSet, StageOutput, WorkflowContext};
 use crate::process::{LocalContentSource, ProcessFailure, ProcessItem, ProcessProgress, ProcessStage};
 use crate::{Error, Result};
@@ -18,11 +19,11 @@ use tokio::sync::Semaphore;
 
 // region:    --- Public Functions
 
-pub(crate) fn discover_local(source: &LocalContentSource, options: &FetchOptions) -> Result<LocalFetchDiscovery> {
-	let source_path = &source.path;
+pub(crate) fn discover_local(request: &LocalFetchRequest) -> Result<LocalFetchDiscovery> {
+	let source_path = &request.source.path;
 	let source_identity = source_identity(source_path)?;
 	let source_kind = validate_source_kind(source_path, &source_identity)?;
-	let patterns = build_glob_patterns(options);
+	let patterns = build_glob_patterns(&request.common);
 
 	let candidates = match source_kind {
 		LocalSourceKind::File => discover_single_file(source_path, &patterns)?,
@@ -68,8 +69,7 @@ pub(crate) fn discover_local(source: &LocalContentSource, options: &FetchOptions
 }
 
 pub(crate) async fn execute_local_fetch(
-	source: &LocalContentSource,
-	options: &FetchOptions,
+	request: &LocalFetchRequest,
 	context: &WorkflowContext,
 ) -> Result<StageOutput> {
 	if context.max_concurrency == 0 {
@@ -79,7 +79,7 @@ pub(crate) async fn execute_local_fetch(
 	}
 
 	if context.resume
-		&& let Some(output) = try_resume_local_fetch(source, options, context)?
+		&& let Some(output) = try_resume_local_fetch(request, context)?
 	{
 		return Ok(output);
 	}
@@ -88,8 +88,8 @@ pub(crate) async fn execute_local_fetch(
 		source: source_identity,
 		source_path,
 		items,
-	} = discover_local(source, options)?;
-	let artifact_root = if options.copy_local_files {
+	} = discover_local(request)?;
+	let artifact_root = if request.options.copy_local_files {
 		ensure_dir(&context.fetch_cache)?;
 		context.fetch_cache.clone()
 	} else {
@@ -105,14 +105,14 @@ pub(crate) async fn execute_local_fetch(
 	let mut materializations = Vec::with_capacity(items.len());
 
 	for item in &items {
-		let artifact_path = if options.copy_local_files {
+		let artifact_path = if request.options.copy_local_files {
 			context.fetch_cache.join(item.relative_path.as_str())
 		} else {
 			item.local_path.clone()
 		};
 		let source_path = item.local_path.clone();
 		let task_artifact_path = artifact_path.clone();
-		let copy_local_files = options.copy_local_files;
+		let copy_local_files = request.options.copy_local_files;
 		let permit = semaphore
 			.clone()
 			.acquire_owned()
@@ -171,11 +171,11 @@ pub(crate) async fn execute_local_fetch(
 	}
 
 	let manifest = FetchManifest {
-		version: 1,
+		version: FETCH_MANIFEST_VERSION,
 		complete: failures.is_empty(),
 		source: source_identity,
 		source_path: path_to_string(&source_path)?,
-		options: FetchManifestOptions::from(options),
+		options: FetchManifestOptions::from(request),
 		artifact_root: path_to_string(&artifact_root)?,
 		items: manifest_items,
 	};
@@ -196,7 +196,14 @@ pub(crate) fn load_prior_local_fetch(context: &WorkflowContext) -> Result<Artifa
 	let manifest = read_fetch_manifest(&context.manifest)?;
 	validate_prior_manifest(&manifest, context)?;
 
-	let copy_local_files = manifest.options.copy_local_files;
+	let copy_local_files = match &manifest.options {
+		FetchManifestOptions::Local { copy_local_files, .. } => *copy_local_files,
+		FetchManifestOptions::Web { .. } => {
+			return Err(Error::MalformedState(
+				"prior Fetch manifest is for web source, expected local source".to_owned(),
+			));
+		}
+	};
 	let artifact_root = SPath::from(manifest.artifact_root.clone());
 	let root_available = if copy_local_files {
 		artifact_root.is_dir()
@@ -316,35 +323,37 @@ pub(crate) fn validate_source(source: &LocalContentSource) -> Result<()> {
 // region:    --- Support
 
 fn try_resume_local_fetch(
-	source: &LocalContentSource,
-	options: &FetchOptions,
+	request: &LocalFetchRequest,
 	context: &WorkflowContext,
 ) -> Result<Option<StageOutput>> {
 	let Some(manifest) = read_fetch_manifest_for_resume(&context.manifest) else {
 		return Ok(None);
 	};
 
-	let discovery = discover_local(source, options)?;
+	let discovery = discover_local(request)?;
 
-	if !fetch_manifest_matches(&manifest, &discovery, options, context)? {
+	if !fetch_manifest_matches(&manifest, &discovery, request, context)? {
 		return Ok(None);
 	}
 
-	build_reused_stage_output(&manifest, &discovery, options, context)
+	build_reused_stage_output(&manifest, &discovery, request, context)
 }
 
 fn fetch_manifest_matches(
 	manifest: &FetchManifest,
 	discovery: &LocalFetchDiscovery,
-	options: &FetchOptions,
+	request: &LocalFetchRequest,
 	context: &WorkflowContext,
 ) -> Result<bool> {
-	if manifest.version != 1 || !manifest.complete || manifest.options != FetchManifestOptions::from(options) {
+	if manifest.version != FETCH_MANIFEST_VERSION
+		|| !manifest.complete
+		|| manifest.options != FetchManifestOptions::from(request)
+	{
 		return Ok(false);
 	}
 
 	let expected_source_path = path_to_string(&discovery.source_path)?;
-	let expected_artifact_root_path = artifact_root_for(&discovery.source_path, options, context);
+	let expected_artifact_root_path = artifact_root_for(&discovery.source_path, request, context);
 	let expected_artifact_root = path_to_string(&expected_artifact_root_path)?;
 
 	if manifest.source != discovery.source
@@ -357,7 +366,7 @@ fn fetch_manifest_matches(
 
 	for (manifest_item, current_item) in manifest.items.iter().zip(discovery.items.iter()) {
 		let expected_local_path = path_to_string(&current_item.local_path)?;
-		let expected_artifact_path = if options.copy_local_files {
+		let expected_artifact_path = if request.options.copy_local_files {
 			expected_artifact_root_path.join(current_item.relative_path.as_str())
 		} else {
 			current_item.local_path.clone()
@@ -381,10 +390,10 @@ fn fetch_manifest_matches(
 fn build_reused_stage_output(
 	manifest: &FetchManifest,
 	discovery: &LocalFetchDiscovery,
-	options: &FetchOptions,
+	request: &LocalFetchRequest,
 	context: &WorkflowContext,
 ) -> Result<Option<StageOutput>> {
-	let artifact_root = artifact_root_for(&discovery.source_path, options, context);
+	let artifact_root = artifact_root_for(&discovery.source_path, request, context);
 	let mut artifacts = Vec::with_capacity(discovery.items.len());
 	let mut skipped_items = Vec::with_capacity(discovery.items.len());
 
@@ -460,7 +469,7 @@ fn read_fetch_manifest_for_resume(path: &SPath) -> Option<FetchManifest> {
 }
 
 fn validate_prior_manifest(manifest: &FetchManifest, context: &WorkflowContext) -> Result<()> {
-	if manifest.version != 1 {
+	if manifest.version != FETCH_MANIFEST_VERSION {
 		return Err(Error::MalformedState(format!(
 			"unsupported Fetch manifest version: {}",
 			manifest.version
@@ -480,7 +489,9 @@ fn validate_prior_manifest(manifest: &FetchManifest, context: &WorkflowContext) 
 		));
 	}
 
-	if manifest.options.copy_local_files {
+	if let FetchManifestOptions::Local { copy_local_files, .. } = &manifest.options
+		&& *copy_local_files
+	{
 		let expected_artifact_root = path_to_string(&context.fetch_cache)?;
 		if manifest.artifact_root != expected_artifact_root {
 			return Err(Error::MalformedState(
@@ -492,8 +503,8 @@ fn validate_prior_manifest(manifest: &FetchManifest, context: &WorkflowContext) 
 	Ok(())
 }
 
-fn artifact_root_for(source_path: &SPath, options: &FetchOptions, context: &WorkflowContext) -> SPath {
-	if options.copy_local_files {
+fn artifact_root_for(source_path: &SPath, request: &LocalFetchRequest, context: &WorkflowContext) -> SPath {
+	if request.options.copy_local_files {
 		context.fetch_cache.clone()
 	} else {
 		source_path.clone()
@@ -541,14 +552,14 @@ fn validate_source_kind(path: &SPath, identity: &str) -> Result<LocalSourceKind>
 	)))
 }
 
-fn build_glob_patterns(options: &FetchOptions) -> Vec<String> {
-	let mut patterns = if options.include.is_empty() {
+fn build_glob_patterns(common: &FetchCommonOptions) -> Vec<String> {
+	let mut patterns = if common.include.is_empty() {
 		vec!["**/*".to_owned()]
 	} else {
-		options.include.clone()
+		common.include.clone()
 	};
 
-	patterns.extend(options.exclude.iter().map(|pattern| {
+	patterns.extend(common.exclude.iter().map(|pattern| {
 		if pattern.starts_with('!') {
 			pattern.clone()
 		} else {
@@ -679,11 +690,10 @@ mod tests {
 		let source_path = root.join("lib.rs");
 		let contents = b"pub fn answer() -> u32 { 42 }\n";
 		write_file(&source_path, contents)?;
-		let source = LocalContentSource::new(path_text(&source_path));
-		let options = FetchOptions::default();
+		let request = LocalFetchRequest::new(path_text(&source_path));
 
 		// -- Exec
-		let discovery = discover_local(&source, &options)?;
+		let discovery = discover_local(&request)?;
 
 		// -- Check
 		assert_eq!(discovery.items.len(), 1);
@@ -714,15 +724,12 @@ mod tests {
 		write_file(nested.join("beta.txt"), b"beta\n")?;
 		write_file(nested.join("skip.txt"), b"skip\n")?;
 
-		let source = LocalContentSource::new(path_text(&root));
-		let options = FetchOptions {
-			include: vec!["**/*".to_owned()],
-			exclude: vec!["nested/skip.txt".to_owned()],
-			..FetchOptions::default()
-		};
+		let request = LocalFetchRequest::new(path_text(&root))
+			.with_include(["**/*"])
+			.with_exclude(["nested/skip.txt"]);
 
 		// -- Exec
-		let discovery = discover_local(&source, &options)?;
+		let discovery = discover_local(&request)?;
 
 		// -- Check
 		let relative_paths = discovery
@@ -744,14 +751,11 @@ mod tests {
 		write_file(root.join("keep.txt"), b"keep\n")?;
 		write_file(nested.join("skip.txt"), b"skip\n")?;
 
-		let source = LocalContentSource::new(path_text(&root));
-		let options = FetchOptions {
-			include: vec!["**/*".to_owned(), "!nested/skip.txt".to_owned()],
-			..FetchOptions::default()
-		};
+		let request = LocalFetchRequest::new(path_text(&root))
+			.with_include(["**/*", "!nested/skip.txt"]);
 
 		// -- Exec
-		let discovery = discover_local(&source, &options)?;
+		let discovery = discover_local(&request)?;
 
 		// -- Check
 		let relative_paths = discovery
@@ -776,11 +780,10 @@ mod tests {
 		write_file(&target_path, b"real\n")?;
 		symlink("real.txt", &link_path)?;
 
-		let source = LocalContentSource::new(path_text(&root));
-		let options = FetchOptions::default();
+		let request = LocalFetchRequest::new(path_text(&root));
 
 		// -- Exec
-		let discovery = discover_local(&source, &options)?;
+		let discovery = discover_local(&request)?;
 
 		// -- Check
 		assert_eq!(discovery.items.len(), 1);
@@ -789,6 +792,44 @@ mod tests {
 			.first()
 			.ok_or("symbolic-link discovery should retain the regular file")?;
 		assert_eq!(item.relative_path, "real.txt");
+
+		Ok(())
+	}
+
+	#[test]
+	fn test_fetchr_local_matches_rejects_version_or_variant_mismatch() -> Result<()> {
+		// -- Setup & Fixtures
+		let request = LocalFetchRequest::new("src").with_copy_local_files(true);
+		let manifest_local = FetchManifest {
+			version: 1,
+			complete: true,
+			source: "src".to_owned(),
+			source_path: "src".to_owned(),
+			options: FetchManifestOptions::from(&request),
+			artifact_root: "src".to_owned(),
+			items: Vec::new(),
+		};
+
+		// -- Exec & Check
+		assert_ne!(manifest_local.version, FETCH_MANIFEST_VERSION);
+
+		let manifest_web = FetchManifest {
+			version: FETCH_MANIFEST_VERSION,
+			complete: true,
+			source: "src".to_owned(),
+			source_path: "src".to_owned(),
+			options: FetchManifestOptions::Web {
+				include: Vec::new(),
+				exclude: Vec::new(),
+				same_host_only: true,
+				follow_links: false,
+				max_depth: 0,
+			},
+			artifact_root: "src".to_owned(),
+			items: Vec::new(),
+		};
+
+		assert_ne!(manifest_web.options, FetchManifestOptions::from(&request));
 
 		Ok(())
 	}

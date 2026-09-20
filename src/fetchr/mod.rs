@@ -5,7 +5,9 @@ mod fetchr_local;
 mod fetchr_types;
 mod support;
 
-pub use fetchr_types::FetchOptions;
+pub use fetchr_types::{
+	FetchCommonOptions, FetchRequest, LocalFetchOptions, LocalFetchRequest, WebFetchOptions, WebFetchRequest,
+};
 
 pub(crate) use fetchr_http::*;
 pub(crate) use fetchr_local::*;

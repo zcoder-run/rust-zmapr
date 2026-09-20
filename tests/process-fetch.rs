@@ -2,8 +2,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 use zmapr::{
-	AiAugmentOptions, ContentMapOptions, ContentSource, Error, FetchOptions, ProcessContentOptions, ProcessProgress,
-	ProcessStage, process_content,
+	AiAugmentOptions, ContentMapOptions, Error, LocalFetchRequest, ProcessContentOptions, ProcessProgress,
+	ProcessStage, WebFetchRequest, process_content,
 };
 
 type Result<T> = core::result::Result<T, Box<dyn std::error::Error>>; // For tests.
@@ -17,10 +17,7 @@ async fn test_process_fetch_local_file_returns_output_and_progress() -> Result<(
 	let destination = root.join("destination");
 
 	// -- Exec
-	let mut handle = process_content(
-		ContentSource::local(path_text(&source_path)),
-		local_fetch_options(&destination, false, false),
-	)
+	let mut handle = process_content(local_fetch_options(&source_path, &destination, false, false))
 	.await?;
 	let _progress_rx = handle.take_progress_rx().ok_or("Fetch should provide a progress receiver")?;
 	let output = handle.wait_output().await?;
@@ -73,11 +70,7 @@ async fn test_process_fetch_copies_directory_artifacts_and_publishes_manifest() 
 	let destination = root.join("destination");
 
 	// -- Exec
-	let handle = process_content(
-		ContentSource::local(path_text(&source_root)),
-		local_fetch_options(&destination, true, false),
-	)
-	.await?;
+	let handle = process_content(local_fetch_options(&source_root, &destination, true, false)).await?;
 	let output = handle.wait_output().await?;
 
 	// -- Check
@@ -138,11 +131,7 @@ async fn test_process_fetch_resume_reuses_and_rebuilds_state() -> Result<()> {
 	let destination = root.join("destination");
 
 	// -- Exec
-	let first_handle = process_content(
-		ContentSource::local(path_text(&source_path)),
-		local_fetch_options(&destination, true, false),
-	)
-	.await?;
+	let first_handle = process_content(local_fetch_options(&source_path, &destination, true, false)).await?;
 	let first_output = first_handle.wait_output().await?;
 
 	// -- Check
@@ -169,11 +158,7 @@ async fn test_process_fetch_resume_reuses_and_rebuilds_state() -> Result<()> {
 	let original_manifest = fs::read(&manifest_path)?;
 	let original_hash = manifest_hash(&manifest_path)?;
 
-	let second_handle = process_content(
-		ContentSource::local(path_text(&source_path)),
-		local_fetch_options(&destination, true, true),
-	)
-	.await?;
+	let second_handle = process_content(local_fetch_options(&source_path, &destination, true, true)).await?;
 	let second_output = second_handle.wait_output().await?;
 	assert!(second_output.completed_items.is_empty());
 	assert_eq!(second_output.skipped_items.len(), 1);
@@ -181,11 +166,7 @@ async fn test_process_fetch_resume_reuses_and_rebuilds_state() -> Result<()> {
 
 	fs::remove_file(&artifact_path)?;
 
-	let third_handle = process_content(
-		ContentSource::local(path_text(&source_path)),
-		local_fetch_options(&destination, true, true),
-	)
-	.await?;
+	let third_handle = process_content(local_fetch_options(&source_path, &destination, true, true)).await?;
 	let third_output = third_handle.wait_output().await?;
 	assert_eq!(third_output.completed_items.len(), 1);
 	assert!(third_output.skipped_items.is_empty());
@@ -193,11 +174,7 @@ async fn test_process_fetch_resume_reuses_and_rebuilds_state() -> Result<()> {
 
 	fs::write(&source_path, b"changed\n")?;
 
-	let fourth_handle = process_content(
-		ContentSource::local(path_text(&source_path)),
-		local_fetch_options(&destination, true, true),
-	)
-	.await?;
+	let fourth_handle = process_content(local_fetch_options(&source_path, &destination, true, true)).await?;
 	let fourth_output = fourth_handle.wait_output().await?;
 	assert_eq!(fourth_output.completed_items.len(), 1);
 	assert!(fourth_output.skipped_items.is_empty());
@@ -215,11 +192,7 @@ async fn test_process_fetch_invalid_local_source_returns_structured_error() -> R
 	let destination = root.join("destination");
 
 	// -- Exec
-	let result = process_content(
-		ContentSource::local(path_text(&missing_source)),
-		local_fetch_options(&destination, false, false),
-	)
-	.await;
+	let result = process_content(local_fetch_options(&missing_source, &destination, false, false)).await;
 
 	// -- Check
 	let error = match result {
@@ -237,13 +210,11 @@ async fn test_process_fetch_web_source_invalid_url_returns_structured_error() ->
 	// -- Setup & Fixtures
 	let root = fixture_root("test_process_fetch_web_source_invalid_url_returns_structured_error")?;
 	let destination = root.join("destination");
-	let options = ProcessContentOptions::new(path_text(&destination)).with_fetch(FetchOptions {
-		same_host_only: true,
-		..FetchOptions::default()
-	});
+	let options = ProcessContentOptions::new(path_text(&destination))
+		.with_fetch(WebFetchRequest::new("not-a-valid-url").with_same_host_only(true));
 
 	// -- Exec
-	let result = process_content(ContentSource::web("not-a-valid-url"), options).await;
+	let result = process_content(options).await;
 
 	// -- Check
 	let error = match result {
@@ -265,11 +236,7 @@ async fn test_process_fetch_deferred_ai_stages_remain_unsupported() -> Result<()
 	let destination = root.join("destination");
 
 	// -- Exec
-	let fetch_handle = process_content(
-		ContentSource::local(path_text(&source_path)),
-		local_fetch_options(&destination, true, false),
-	)
-	.await?;
+	let fetch_handle = process_content(local_fetch_options(&source_path, &destination, true, false)).await?;
 	let _ = fetch_handle.wait_output().await?;
 
 	// -- Exec & Check
@@ -279,7 +246,7 @@ async fn test_process_fetch_deferred_ai_stages_remain_unsupported() -> Result<()
 		ProcessContentOptions::new(path_text(&destination))
 			.with_content_map(ContentMapOptions::new("test-provider", "test-model")),
 	] {
-		let handle = process_content(ContentSource::local(path_text(&source_path)), options).await?;
+		let handle = process_content(options).await?;
 		let result = handle.wait_output().await;
 		let error = match result {
 			Err(error) => error,
@@ -323,15 +290,15 @@ async fn test_process_fetch_web_crawls_and_reports_progress() -> Result<()> {
 	let destination = root.join("destination");
 	let start_url = format!("http://127.0.0.1:{port}/site/");
 
-	let options = ProcessContentOptions::new(path_text(&destination)).with_fetch(FetchOptions {
-		follow_links: true,
-		max_depth: 2,
-		same_host_only: true,
-		..FetchOptions::default()
-	});
+	let options = ProcessContentOptions::new(path_text(&destination)).with_fetch(
+		WebFetchRequest::new(&start_url)
+			.with_follow_links(true)
+			.with_max_depth(2)
+			.with_same_host_only(true),
+	);
 
 	// -- Exec
-	let mut handle = process_content(ContentSource::web(&start_url), options).await?;
+	let mut handle = process_content(options).await?;
 	let mut progress_rx = handle.take_progress_rx().ok_or("Fetch should provide a progress receiver")?;
 
 	let progress_task = tokio::spawn(async move {
@@ -429,15 +396,15 @@ async fn test_process_fetch_web_respects_max_depth() -> Result<()> {
 	let destination = root.join("destination");
 	let start_url = format!("http://127.0.0.1:{port}/docs/");
 
-	let options = ProcessContentOptions::new(path_text(&destination)).with_fetch(FetchOptions {
-		follow_links: true,
-		max_depth: 1,
-		same_host_only: true,
-		..FetchOptions::default()
-	});
+	let options = ProcessContentOptions::new(path_text(&destination)).with_fetch(
+		WebFetchRequest::new(&start_url)
+			.with_follow_links(true)
+			.with_max_depth(1)
+			.with_same_host_only(true),
+	);
 
 	// -- Exec
-	let handle = process_content(ContentSource::web(&start_url), options).await?;
+	let handle = process_content(options).await?;
 	let output = handle.wait_output().await?;
 
 	// -- Check
@@ -476,15 +443,15 @@ async fn test_process_fetch_web_records_failures_for_broken_links() -> Result<()
 	let destination = root.join("destination");
 	let start_url = format!("http://127.0.0.1:{port}/site/");
 
-	let options = ProcessContentOptions::new(path_text(&destination)).with_fetch(FetchOptions {
-		follow_links: true,
-		max_depth: 1,
-		same_host_only: true,
-		..FetchOptions::default()
-	});
+	let options = ProcessContentOptions::new(path_text(&destination)).with_fetch(
+		WebFetchRequest::new(&start_url)
+			.with_follow_links(true)
+			.with_max_depth(1)
+			.with_same_host_only(true),
+	);
 
 	// -- Exec
-	let handle = process_content(ContentSource::web(&start_url), options).await?;
+	let handle = process_content(options).await?;
 	let output = handle.wait_output().await?;
 
 	// -- Check
@@ -554,11 +521,15 @@ fn fixture_root(test_name: &str) -> Result<PathBuf> {
 	Ok(root)
 }
 
-fn local_fetch_options(destination: &Path, copy_local_files: bool, resume: bool) -> ProcessContentOptions {
-	let mut options = ProcessContentOptions::new(path_text(destination)).with_fetch(FetchOptions {
-		copy_local_files,
-		..FetchOptions::default()
-	});
+fn local_fetch_options(
+	source_path: &Path,
+	destination: &Path,
+	copy_local_files: bool,
+	resume: bool,
+) -> ProcessContentOptions {
+	let mut options = ProcessContentOptions::new(path_text(destination)).with_fetch(
+		LocalFetchRequest::new(path_text(source_path)).with_copy_local_files(copy_local_files),
+	);
 	options.resume = resume;
 	options
 }

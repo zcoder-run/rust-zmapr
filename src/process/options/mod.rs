@@ -7,7 +7,7 @@ mod sanitize_options;
 
 pub use ai_augment_options::*;
 pub use content_map_options::*;
-pub use crate::fetchr::FetchOptions;
+pub use crate::fetchr::FetchRequest;
 pub use process_content_options::*;
 pub use sanitize_options::*;
 
