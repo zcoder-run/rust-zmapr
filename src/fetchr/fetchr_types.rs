@@ -5,17 +5,17 @@ use simple_fs::SPath;
 
 #[derive(Debug, Clone, Default)]
 pub struct FetchOptions {
-	/// Glob patterns selecting files or website paths to include.
+	/// Glob patterns selecting files or web paths to include.
 	pub include: Vec<String>,
 	/// Glob patterns excluding otherwise selected content.
 	pub exclude: Vec<String>,
 	/// Copies selected local files into the deterministic cache.
 	pub copy_local_files: bool,
-	/// Restricts website crawling to the source host.
+	/// Restricts web crawling to the source host.
 	pub same_host_only: bool,
-	/// Maximum link depth from the starting website URL.
+	/// Maximum link depth from the starting web URL.
 	pub max_depth: usize,
-	/// Enables discovery of linked website pages.
+	/// Enables discovery of linked web pages.
 	pub follow_links: bool,
 }
 

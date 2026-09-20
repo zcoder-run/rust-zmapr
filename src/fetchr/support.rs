@@ -137,12 +137,8 @@ fn match_segments(path: &[&str], pattern: &[&str]) -> bool {
 				(0..=path.len()).any(|idx| match_segments(&path[idx..], &pattern[1..]))
 			}
 		}
-		(Some(p), Some(pat)) => {
-			if segment_matches(p, pat) {
-				match_segments(&path[1..], &pattern[1..])
-			} else {
-				false
-			}
+		(Some(p), Some(pat)) if segment_matches(p, pat) => {
+			match_segments(&path[1..], &pattern[1..])
 		}
 		_ => false,
 	}

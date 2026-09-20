@@ -1,8 +1,8 @@
-use crate::fetchr::{validate_source, validate_website_source};
 use super::pipeline::{StageOutput, WorkflowContext, run_pipeline};
 use super::progress::{ProcessProgressPublisher, new_completion_channel, new_progress_channel};
 use super::response::{ProcessContentHandle, ProcessContentOutput};
 use super::state::{ProcessQuery, new_process_state};
+use crate::fetchr::{validate_source, validate_web_source};
 use crate::{ContentSource, Error, ProcessContentOptions, ProcessStage, Result};
 use simple_fs::SPath;
 
@@ -88,7 +88,7 @@ fn validate_request(source: &ContentSource, options: &ProcessContentOptions) -> 
 	}
 
 	if let Some(fetch) = &options.fetch
-		&& let ContentSource::Website(_) = source
+		&& let ContentSource::Web(_) = source
 		&& !fetch.same_host_only
 	{
 		return Err(Error::InvalidConfiguration(
@@ -103,9 +103,9 @@ fn validate_request(source: &ContentSource, options: &ProcessContentOptions) -> 
 	}
 
 	if options.fetch.is_some()
-		&& let ContentSource::Website(website_source) = source
+		&& let ContentSource::Web(website_source) = source
 	{
-		validate_website_source(website_source)?;
+		validate_web_source(website_source)?;
 	}
 
 	if let Some(ai_augment) = &options.ai_augment {
@@ -129,12 +129,12 @@ fn validate_request(source: &ContentSource, options: &ProcessContentOptions) -> 
 		)));
 	}
 
-	if let ContentSource::Website(_) = source {
-		if options.fetch.is_none() {
+	if let ContentSource::Web(_) = source
+		&& options.fetch.is_none()
+	{
 			return Err(Error::InvalidConfiguration(
 				"website sources require Fetch to be enabled".into(),
 			));
-		}
 	}
 
 	Ok(layout)

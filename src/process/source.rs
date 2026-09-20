@@ -5,7 +5,7 @@ use simple_fs::SPath;
 #[derive(Debug, Clone)]
 pub enum ContentSource {
 	LocalPath(LocalContentSource),
-	Website(WebsiteContentSource),
+	Web(WebContentSource),
 }
 
 #[derive(Debug, Clone)]
@@ -15,8 +15,8 @@ pub struct LocalContentSource {
 }
 
 #[derive(Debug, Clone)]
-pub struct WebsiteContentSource {
-	/// Absolute website URL at which Fetch starts.
+pub struct WebContentSource {
+	/// Absolute web URL at which Fetch starts.
 	pub url: String,
 }
 
@@ -25,12 +25,12 @@ pub struct WebsiteContentSource {
 // region:    --- Constructors
 
 impl ContentSource {
-	pub fn local_path(path: impl Into<SPath>) -> Self {
+	pub fn local(path: impl Into<SPath>) -> Self {
 		Self::LocalPath(LocalContentSource::new(path))
 	}
 
-	pub fn website(url: impl Into<String>) -> Self {
-		Self::Website(WebsiteContentSource::new(url))
+	pub fn web(url: impl Into<String>) -> Self {
+		Self::Web(WebContentSource::new(url))
 	}
 }
 
@@ -40,7 +40,7 @@ impl LocalContentSource {
 	}
 }
 
-impl WebsiteContentSource {
+impl WebContentSource {
 	pub fn new(url: impl Into<String>) -> Self {
 		Self { url: url.into() }
 	}
@@ -56,15 +56,15 @@ impl From<LocalContentSource> for ContentSource {
 	}
 }
 
-impl From<WebsiteContentSource> for ContentSource {
-	fn from(source: WebsiteContentSource) -> Self {
-		Self::Website(source)
+impl From<WebContentSource> for ContentSource {
+	fn from(source: WebContentSource) -> Self {
+		Self::Web(source)
 	}
 }
 
 impl From<SPath> for ContentSource {
 	fn from(path: SPath) -> Self {
-		Self::local_path(path)
+		Self::local(path)
 	}
 }
 

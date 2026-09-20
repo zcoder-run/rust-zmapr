@@ -2,7 +2,7 @@ use super::fetchr_types::{FetchManifest, FetchManifestItem, FetchManifestOptions
 use super::support::{ensure_parent, is_path_selected, media_type_for, path_to_string, write_fetch_manifest};
 use crate::fetchr::FetchOptions;
 use crate::process::pipeline::{ArtifactItem, ArtifactSet, StageOutput, WorkflowContext};
-use crate::process::{ProcessFailure, ProcessItem, ProcessProgress, ProcessStage, WebsiteContentSource};
+use crate::process::{ProcessFailure, ProcessItem, ProcessProgress, ProcessStage, WebContentSource};
 use crate::webc::{WebClient, new_client};
 use crate::{Error, Result};
 use reqwest::Url;
@@ -17,7 +17,7 @@ use tokio::sync::Semaphore;
 // region:    --- Execution
 
 pub(crate) async fn execute_http_fetch(
-	source: &WebsiteContentSource,
+	source: &WebContentSource,
 	options: &FetchOptions,
 	context: &WorkflowContext,
 ) -> Result<StageOutput> {
@@ -28,10 +28,10 @@ pub(crate) async fn execute_http_fetch(
 	}
 
 	let mut start_url = Url::parse(&source.url)
-		.map_err(|err| Error::InvalidConfiguration(format!("invalid website URL '{}': {err}", source.url)))?;
+		.map_err(|err| Error::InvalidConfiguration(format!("invalid web URL '{}': {err}", source.url)))?;
 	if start_url.scheme() != "http" && start_url.scheme() != "https" {
 		return Err(Error::InvalidConfiguration(format!(
-			"website URL must use http or https scheme: {}",
+			"web URL must use http or https scheme: {}",
 			source.url
 		)));
 	}
@@ -60,9 +60,11 @@ pub(crate) async fn execute_http_fetch(
 		let mut tasks = Vec::with_capacity(current_level.len());
 
 		for url in current_level {
-			let permit = semaphore.clone().acquire_owned().await.map_err(|_| {
-				Error::MalformedState("Fetch HTTP concurrency control closed".to_owned())
-			})?;
+			let permit = semaphore
+				.clone()
+				.acquire_owned()
+				.await
+				.map_err(|_| Error::MalformedState("Fetch HTTP concurrency control closed".to_owned()))?;
 			let client = client.clone();
 			let base_folder = base_folder_url.clone();
 
@@ -76,9 +78,9 @@ pub(crate) async fn execute_http_fetch(
 		let mut next_level = Vec::new();
 
 		for task in tasks {
-			let fetch_outcome = task.await.map_err(|err| {
-				Error::MalformedState(format!("Fetch HTTP task failed: {err}"))
-			})?;
+			let fetch_outcome = task
+				.await
+				.map_err(|err| Error::MalformedState(format!("Fetch HTTP task failed: {err}")))?;
 
 			match fetch_outcome {
 				Ok(fetched) => {
@@ -164,10 +166,10 @@ pub(crate) async fn execute_http_fetch(
 						&& fetched
 							.media_type
 							.as_deref()
-							.map_or(false, |media| media.starts_with("text/html"))
+							.is_some_and(|media| media.starts_with("text/html"))
+						&& let Ok(html_text) = std::str::from_utf8(&fetched.body)
+						&& let Ok(links) = extract_links(html_text, &fetched.url)
 					{
-						if let Ok(html_text) = std::str::from_utf8(&fetched.body) {
-							if let Ok(links) = extract_links(html_text, &fetched.url) {
 								for link in links {
 									if is_url_in_scope(&link, &base_folder_url, options)
 										&& visited.insert(link.as_str().to_owned())
@@ -175,13 +177,11 @@ pub(crate) async fn execute_http_fetch(
 										next_level.push(link);
 									}
 								}
-							}
-						}
 					}
 				}
 				Err((url, err_msg)) => {
-					let relative = url_to_relative_path(&url, &base_folder_url)
-						.unwrap_or_else(|_| url.as_str().to_owned());
+					let relative =
+						url_to_relative_path(&url, &base_folder_url).unwrap_or_else(|_| url.as_str().to_owned());
 					let failed_item = ProcessItem {
 						source: relative,
 						output_path: None,
@@ -228,12 +228,12 @@ pub(crate) async fn execute_http_fetch(
 	})
 }
 
-pub(crate) fn validate_website_source(source: &WebsiteContentSource) -> Result<()> {
+pub(crate) fn validate_web_source(source: &WebContentSource) -> Result<()> {
 	let url = Url::parse(&source.url)
-		.map_err(|err| Error::InvalidConfiguration(format!("invalid website URL '{}': {err}", source.url)))?;
+		.map_err(|err| Error::InvalidConfiguration(format!("invalid web URL '{}': {err}", source.url)))?;
 	if url.scheme() != "http" && url.scheme() != "https" {
 		return Err(Error::InvalidConfiguration(format!(
-			"website URL must use http or https scheme: {}",
+			"web URL must use http or https scheme: {}",
 			source.url
 		)));
 	}
@@ -642,14 +642,12 @@ mod tests {
 			}
 		});
 
-		let test_id = std::time::SystemTime::now()
-			.duration_since(std::time::UNIX_EPOCH)?
-			.as_millis();
+		let test_id = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_millis();
 		let dest = SPath::from(format!("tests-data/.tmp/test_http_fetch_{test_id}"));
 		let fetch_cache = dest.join(".zmapr/fetch");
 		let manifest = dest.join(".zmapr/manifest.json");
 
-		let source = WebsiteContentSource::new(format!("http://127.0.0.1:{port}/"));
+		let source = WebContentSource::new(format!("http://127.0.0.1:{port}/"));
 		let options = FetchOptions {
 			follow_links: true,
 			max_depth: 2,
@@ -661,7 +659,7 @@ mod tests {
 		let progress = crate::process::progress::ProcessProgressPublisher::new(tx, state);
 
 		let context = WorkflowContext {
-			source: crate::process::ContentSource::Website(source.clone()),
+			source: crate::process::ContentSource::Web(source.clone()),
 			destination: dest.clone(),
 			fetch_cache: fetch_cache.clone(),
 			sanitize_output: dest.join(".zmapr/stages/sanitize"),

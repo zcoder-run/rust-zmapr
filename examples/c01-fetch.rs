@@ -2,7 +2,7 @@ use zmapr::{ContentSource, FetchOptions, ProcessContentOptions, process_content}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-	let source = ContentSource::local_path("src");
+	let source = ContentSource::local("src");
 	let options = ProcessContentOptions::new("examples/.out/c01-fetch").with_fetch(FetchOptions {
 		copy_local_files: true,
 		..Default::default()

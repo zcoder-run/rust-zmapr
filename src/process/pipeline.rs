@@ -1,7 +1,7 @@
-use crate::fetchr::{FetchOptions, execute_http_fetch, execute_local_fetch, load_prior_local_fetch};
 use super::progress::{ProcessProgress, ProcessProgressPublisher};
 use super::source::ContentSource;
 use super::{ProcessContentOptions, ProcessFailure, ProcessItem, ProcessStage};
+use crate::fetchr::{FetchOptions, execute_http_fetch, execute_local_fetch, load_prior_local_fetch};
 use crate::{Error, Result};
 use simple_fs::SPath;
 use std::future::Future;
@@ -145,7 +145,7 @@ async fn execute_fetch_stage(context: &WorkflowContext, options: &FetchOptions) 
 	});
 	let result = match &context.source {
 		ContentSource::LocalPath(source) => execute_local_fetch(source, options, context).await,
-		ContentSource::Website(source) => execute_http_fetch(source, options, context).await,
+		ContentSource::Web(source) => execute_http_fetch(source, options, context).await,
 	};
 
 	if result.is_ok() {

@@ -18,7 +18,7 @@ async fn test_process_fetch_local_file_returns_output_and_progress() -> Result<(
 
 	// -- Exec
 	let mut handle = process_content(
-		ContentSource::local_path(path_text(&source_path)),
+		ContentSource::local(path_text(&source_path)),
 		local_fetch_options(&destination, false, false),
 	)
 	.await?;
@@ -74,7 +74,7 @@ async fn test_process_fetch_copies_directory_artifacts_and_publishes_manifest() 
 
 	// -- Exec
 	let handle = process_content(
-		ContentSource::local_path(path_text(&source_root)),
+		ContentSource::local(path_text(&source_root)),
 		local_fetch_options(&destination, true, false),
 	)
 	.await?;
@@ -139,7 +139,7 @@ async fn test_process_fetch_resume_reuses_and_rebuilds_state() -> Result<()> {
 
 	// -- Exec
 	let first_handle = process_content(
-		ContentSource::local_path(path_text(&source_path)),
+		ContentSource::local(path_text(&source_path)),
 		local_fetch_options(&destination, true, false),
 	)
 	.await?;
@@ -170,7 +170,7 @@ async fn test_process_fetch_resume_reuses_and_rebuilds_state() -> Result<()> {
 	let original_hash = manifest_hash(&manifest_path)?;
 
 	let second_handle = process_content(
-		ContentSource::local_path(path_text(&source_path)),
+		ContentSource::local(path_text(&source_path)),
 		local_fetch_options(&destination, true, true),
 	)
 	.await?;
@@ -182,7 +182,7 @@ async fn test_process_fetch_resume_reuses_and_rebuilds_state() -> Result<()> {
 	fs::remove_file(&artifact_path)?;
 
 	let third_handle = process_content(
-		ContentSource::local_path(path_text(&source_path)),
+		ContentSource::local(path_text(&source_path)),
 		local_fetch_options(&destination, true, true),
 	)
 	.await?;
@@ -194,7 +194,7 @@ async fn test_process_fetch_resume_reuses_and_rebuilds_state() -> Result<()> {
 	fs::write(&source_path, b"changed\n")?;
 
 	let fourth_handle = process_content(
-		ContentSource::local_path(path_text(&source_path)),
+		ContentSource::local(path_text(&source_path)),
 		local_fetch_options(&destination, true, true),
 	)
 	.await?;
@@ -216,7 +216,7 @@ async fn test_process_fetch_invalid_local_source_returns_structured_error() -> R
 
 	// -- Exec
 	let result = process_content(
-		ContentSource::local_path(path_text(&missing_source)),
+		ContentSource::local(path_text(&missing_source)),
 		local_fetch_options(&destination, false, false),
 	)
 	.await;
@@ -233,9 +233,9 @@ async fn test_process_fetch_invalid_local_source_returns_structured_error() -> R
 }
 
 #[tokio::test]
-async fn test_process_fetch_website_source_invalid_url_returns_structured_error() -> Result<()> {
+async fn test_process_fetch_web_source_invalid_url_returns_structured_error() -> Result<()> {
 	// -- Setup & Fixtures
-	let root = fixture_root("test_process_fetch_website_source_invalid_url_returns_structured_error")?;
+	let root = fixture_root("test_process_fetch_web_source_invalid_url_returns_structured_error")?;
 	let destination = root.join("destination");
 	let options = ProcessContentOptions::new(path_text(&destination)).with_fetch(FetchOptions {
 		same_host_only: true,
@@ -243,12 +243,12 @@ async fn test_process_fetch_website_source_invalid_url_returns_structured_error(
 	});
 
 	// -- Exec
-	let result = process_content(ContentSource::website("not-a-valid-url"), options).await;
+	let result = process_content(ContentSource::web("not-a-valid-url"), options).await;
 
 	// -- Check
 	let error = match result {
 		Err(error) => error,
-		Ok(_) => return Err("invalid website source should fail before starting".into()),
+		Ok(_) => return Err("invalid web source should fail before starting".into()),
 	};
 	assert!(matches!(error, Error::InvalidConfiguration(_)));
 	assert!(!destination.exists());
@@ -266,7 +266,7 @@ async fn test_process_fetch_deferred_ai_stages_remain_unsupported() -> Result<()
 
 	// -- Exec
 	let fetch_handle = process_content(
-		ContentSource::local_path(path_text(&source_path)),
+		ContentSource::local(path_text(&source_path)),
 		local_fetch_options(&destination, true, false),
 	)
 	.await?;
@@ -279,7 +279,7 @@ async fn test_process_fetch_deferred_ai_stages_remain_unsupported() -> Result<()
 		ProcessContentOptions::new(path_text(&destination))
 			.with_content_map(ContentMapOptions::new("test-provider", "test-model")),
 	] {
-		let handle = process_content(ContentSource::local_path(path_text(&source_path)), options).await?;
+		let handle = process_content(ContentSource::local(path_text(&source_path)), options).await?;
 		let result = handle.wait_output().await;
 		let error = match result {
 			Err(error) => error,
@@ -292,7 +292,7 @@ async fn test_process_fetch_deferred_ai_stages_remain_unsupported() -> Result<()
 }
 
 #[tokio::test]
-async fn test_process_fetch_website_crawls_and_reports_progress() -> Result<()> {
+async fn test_process_fetch_web_crawls_and_reports_progress() -> Result<()> {
 	// -- Setup & Fixtures
 	let (port, _shutdown) = spawn_mock_server(|path| match path {
 		"/site/" | "/site/index.html" => (
@@ -319,7 +319,7 @@ async fn test_process_fetch_website_crawls_and_reports_progress() -> Result<()> 
 	})
 	.await?;
 
-	let root = fixture_root("test_process_fetch_website_crawls_and_reports_progress")?;
+	let root = fixture_root("test_process_fetch_web_crawls_and_reports_progress")?;
 	let destination = root.join("destination");
 	let start_url = format!("http://127.0.0.1:{port}/site/");
 
@@ -331,10 +331,8 @@ async fn test_process_fetch_website_crawls_and_reports_progress() -> Result<()> 
 	});
 
 	// -- Exec
-	let mut handle = process_content(ContentSource::website(&start_url), options).await?;
-	let mut progress_rx = handle
-		.take_progress_rx()
-		.ok_or("Fetch should provide a progress receiver")?;
+	let mut handle = process_content(ContentSource::web(&start_url), options).await?;
+	let mut progress_rx = handle.take_progress_rx().ok_or("Fetch should provide a progress receiver")?;
 
 	let progress_task = tokio::spawn(async move {
 		let mut events = Vec::new();
@@ -367,10 +365,7 @@ async fn test_process_fetch_website_crawls_and_reports_progress() -> Result<()> 
 	assert!(fetch_dir.join("page2.html").is_file());
 	assert!(fetch_dir.join("sub/page3.html").is_file());
 
-	let manifest_path = output
-		.manifest_path
-		.as_ref()
-		.ok_or("Website fetch should publish a manifest")?;
+	let manifest_path = output.manifest_path.as_ref().ok_or("Web fetch should publish a manifest")?;
 	assert!(manifest_path.is_file());
 	let manifest: serde_json::Value = serde_json::from_str(&fs::read_to_string(manifest_path.as_std_path())?)?;
 	assert_eq!(
@@ -378,12 +373,22 @@ async fn test_process_fetch_website_crawls_and_reports_progress() -> Result<()> 
 		Some(true)
 	);
 
-	let has_stage_started = progress_events
-		.iter()
-		.any(|event| matches!(event, ProcessProgress::StageStarted { stage: ProcessStage::Fetch }));
-	let has_stage_completed = progress_events
-		.iter()
-		.any(|event| matches!(event, ProcessProgress::StageCompleted { stage: ProcessStage::Fetch }));
+	let has_stage_started = progress_events.iter().any(|event| {
+		matches!(
+			event,
+			ProcessProgress::StageStarted {
+				stage: ProcessStage::Fetch
+			}
+		)
+	});
+	let has_stage_completed = progress_events.iter().any(|event| {
+		matches!(
+			event,
+			ProcessProgress::StageCompleted {
+				stage: ProcessStage::Fetch
+			}
+		)
+	});
 	let item_completed_count = progress_events
 		.iter()
 		.filter(|event| matches!(event, ProcessProgress::ItemCompleted { .. }))
@@ -397,7 +402,7 @@ async fn test_process_fetch_website_crawls_and_reports_progress() -> Result<()> 
 }
 
 #[tokio::test]
-async fn test_process_fetch_website_respects_max_depth() -> Result<()> {
+async fn test_process_fetch_web_respects_max_depth() -> Result<()> {
 	// -- Setup & Fixtures
 	let (port, _shutdown) = spawn_mock_server(|path| match path {
 		"/docs/" | "/docs/index.html" => (
@@ -415,16 +420,12 @@ async fn test_process_fetch_website_respects_max_depth() -> Result<()> {
 			"text/html; charset=utf-8",
 			"<html><body><a href=\"level3.html\">L3</a></body></html>",
 		),
-		"/docs/level3.html" => (
-			"200 OK",
-			"text/html; charset=utf-8",
-			"<html><body>End</body></html>",
-		),
+		"/docs/level3.html" => ("200 OK", "text/html; charset=utf-8", "<html><body>End</body></html>"),
 		_ => ("404 Not Found", "text/plain", "Not Found"),
 	})
 	.await?;
 
-	let root = fixture_root("test_process_fetch_website_respects_max_depth")?;
+	let root = fixture_root("test_process_fetch_web_respects_max_depth")?;
 	let destination = root.join("destination");
 	let start_url = format!("http://127.0.0.1:{port}/docs/");
 
@@ -436,7 +437,7 @@ async fn test_process_fetch_website_respects_max_depth() -> Result<()> {
 	});
 
 	// -- Exec
-	let handle = process_content(ContentSource::website(&start_url), options).await?;
+	let handle = process_content(ContentSource::web(&start_url), options).await?;
 	let output = handle.wait_output().await?;
 
 	// -- Check
@@ -459,7 +460,7 @@ async fn test_process_fetch_website_respects_max_depth() -> Result<()> {
 }
 
 #[tokio::test]
-async fn test_process_fetch_website_records_failures_for_broken_links() -> Result<()> {
+async fn test_process_fetch_web_records_failures_for_broken_links() -> Result<()> {
 	// -- Setup & Fixtures
 	let (port, _shutdown) = spawn_mock_server(|path| match path {
 		"/site/" | "/site/index.html" => (
@@ -471,7 +472,7 @@ async fn test_process_fetch_website_records_failures_for_broken_links() -> Resul
 	})
 	.await?;
 
-	let root = fixture_root("test_process_fetch_website_records_failures_for_broken_links")?;
+	let root = fixture_root("test_process_fetch_web_records_failures_for_broken_links")?;
 	let destination = root.join("destination");
 	let start_url = format!("http://127.0.0.1:{port}/site/");
 
@@ -483,25 +484,19 @@ async fn test_process_fetch_website_records_failures_for_broken_links() -> Resul
 	});
 
 	// -- Exec
-	let handle = process_content(ContentSource::website(&start_url), options).await?;
+	let handle = process_content(ContentSource::web(&start_url), options).await?;
 	let output = handle.wait_output().await?;
 
 	// -- Check
 	assert_eq!(output.completed_items.len(), 1);
 	assert_eq!(output.failures.len(), 1);
 
-	let failure = output
-		.failures
-		.first()
-		.ok_or("Output should contain one failure")?;
+	let failure = output.failures.first().ok_or("Output should contain one failure")?;
 	assert_eq!(failure.item.source, "broken.html");
 	assert_eq!(failure.item.stage, ProcessStage::Fetch);
 	assert!(failure.message.contains("404"));
 
-	let manifest_path = output
-		.manifest_path
-		.as_ref()
-		.ok_or("Output should include a manifest")?;
+	let manifest_path = output.manifest_path.as_ref().ok_or("Output should include a manifest")?;
 	let manifest: serde_json::Value = serde_json::from_str(&fs::read_to_string(manifest_path.as_std_path())?)?;
 	assert_eq!(
 		manifest.get("complete").and_then(serde_json::Value::as_bool),
