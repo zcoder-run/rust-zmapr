@@ -40,6 +40,12 @@ pub struct ProcessItem {
 	pub stage: ProcessStage,
 }
 
+impl ProcessItem {
+	pub fn output_path_str_or<'a>(&'a self, fallback: &'a str) -> &'a str {
+		self.output_path.as_ref().map(|p| p.as_str()).unwrap_or(fallback)
+	}
+}
+
 #[derive(Debug, Clone)]
 pub struct ProcessFailure {
 	/// Failed item and its responsible stage.
