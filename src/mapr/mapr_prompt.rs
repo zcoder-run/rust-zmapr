@@ -6,7 +6,7 @@ use std::sync::LazyLock;
 
 // region:    --- Constants
 
-pub const PROMPT_VERSION: u32 = 1;
+pub const PROMPT_VERSION: u32 = 2;
 
 static PROMPT_TEMPLATE: &str = include_str!("content-map.tmpl");
 
@@ -18,6 +18,26 @@ static PROMPT_AC: LazyLock<std::result::Result<AhoCorasick, String>> =
 // region:    --- Types
 
 #[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum StringOrVec {
+	Single(String),
+	Multiple(Vec<String>),
+}
+
+impl StringOrVec {
+	fn into_vec(self) -> Vec<String> {
+		match self {
+			Self::Single(s) => s
+				.split(',')
+				.map(|part| part.trim().to_string())
+				.filter(|part| !part.is_empty())
+				.collect(),
+			Self::Multiple(vec) => vec,
+		}
+	}
+}
+
+#[derive(Debug, Deserialize)]
 struct RawFileInfo {
 	#[serde(default)]
 	summary: String,
@@ -26,13 +46,13 @@ struct RawFileInfo {
 	when_to_use: String,
 
 	#[serde(default)]
-	public_types: Option<Vec<String>>,
+	public_types: Option<StringOrVec>,
 
 	#[serde(default)]
-	public_functions: Option<Vec<String>>,
+	public_functions: Option<StringOrVec>,
 
 	#[serde(default)]
-	topics: Option<Vec<String>>,
+	topics: Option<StringOrVec>,
 }
 
 // endregion: --- Types
@@ -67,18 +87,55 @@ pub fn parse_file_info(response: &str) -> Result<FileMapEntry> {
 	let raw_info: RawFileInfo = serde_json::from_str(clean_json)
 		.map_err(|err| Error::custom(format!("failed to parse FILE_INFO JSON: {err}")))?;
 
+	let public_types = raw_info
+		.public_types
+		.map(|t| t.into_vec())
+		.unwrap_or_default()
+		.into_iter()
+		.map(|s| s.trim().to_string())
+		.filter(|s| !s.is_empty())
+		.collect();
+
+	let public_functions = raw_info
+		.public_functions
+		.map(|t| t.into_vec())
+		.unwrap_or_default()
+		.into_iter()
+		.map(|s| s.trim().to_string())
+		.filter(|s| !s.is_empty())
+		.collect();
+
+	let raw_topics = raw_info.topics.map(|t| t.into_vec()).unwrap_or_default();
+	let topics = normalize_topics(raw_topics);
+
 	Ok(FileMapEntry {
 		summary: raw_info.summary,
 		when_to_use: raw_info.when_to_use,
-		public_types: raw_info.public_types.unwrap_or_default(),
-		public_functions: raw_info.public_functions.unwrap_or_default(),
-		topics: raw_info.topics.unwrap_or_default(),
+		public_types,
+		public_functions,
+		topics,
 	})
 }
 
 // endregion: --- Public Functions
 
 // region:    --- Support
+
+fn normalize_topics(raw_topics: Vec<String>) -> Vec<String> {
+	let mut normalized = Vec::new();
+	for topic in raw_topics {
+		let words: Vec<&str> = topic.split_whitespace().collect();
+		if !words.is_empty() && normalized.len() < 7 {
+			let topic_words = if words.len() > 3 {
+				&words[..3]
+			} else {
+				&words[..]
+			};
+			normalized.push(topic_words.join(" "));
+		}
+	}
+	normalized
+}
 
 fn strip_markdown_fences(raw: &str) -> &str {
 	let trimmed = raw.trim();
@@ -143,6 +200,37 @@ mod tests {
 		assert_eq!(entry.public_types, vec!["MyType".to_string()]);
 		assert_eq!(entry.public_functions, vec!["my_func".to_string()]);
 		assert_eq!(entry.topics, vec!["parsing".to_string()]);
+
+		Ok(())
+	}
+
+	#[test]
+	fn test_parse_file_info_normalizes_topics_and_string_fallback() -> Result<()> {
+		// -- Setup & Fixtures
+		let raw = r#"<FILE_INFO>
+{
+  "summary": "Topics test",
+  "when_to_use": "Testing normalization",
+  "public_types": "TypeA, TypeB",
+  "public_functions": "func_a, func_b",
+  "topics": "rust programming language details, quick start, cli"
+}
+</FILE_INFO>"#;
+
+		// -- Exec
+		let entry = parse_file_info(raw)?;
+
+		// -- Check
+		assert_eq!(entry.public_types, vec!["TypeA".to_string(), "TypeB".to_string()]);
+		assert_eq!(entry.public_functions, vec!["func_a".to_string(), "func_b".to_string()]);
+		assert_eq!(
+			entry.topics,
+			vec![
+				"rust programming language".to_string(),
+				"quick start".to_string(),
+				"cli".to_string(),
+			]
+		);
 
 		Ok(())
 	}

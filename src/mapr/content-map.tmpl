@@ -1,11 +1,11 @@
 Below is the text file content under the `FILE_CONTENT` tag. Extract the requested code-map information.
 
-Respond with a `FILE_INFO` tag like 
+Respond with a `FILE_INFO` tag like
 <FILE_INFO>
 _file_raw_json_format_
 </FILE_INFO>
 
-Here is the `_file_raw_json_format_` schema 
+Here is the `_file_raw_json_format_` schema
 
 ```typescript
 {
@@ -15,10 +15,11 @@ Here is the `_file_raw_json_format_` schema
 	when_to_use: string,         // concise information of when this file should be included in the context
 	public_types?: string[],     // list of public types this file exposes (if any)
 	public_functions?: string[], // list of public functions this file exposes (if any)
+	topics: string[],            // list of topics that this file covers. 1 to 3 words max per topic, at most 7 topics
 }
 ```
 
-`_file_raw_json_format_` should just be the json, no need to put it in markdown code bock. 
+`_file_raw_json_format_` should just be the json, no need to put it in markdown code bock.
 
 Here is the file content
 

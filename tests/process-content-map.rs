@@ -82,10 +82,12 @@ async fn test_process_content_map_with_stub_publishes_output_and_content_map() -
 	let document: ContentMapDocument = serde_json::from_str(&content_str)?;
 	assert_eq!(document.version, 1);
 	assert_eq!(document.model, "stub-model");
-	assert_eq!(document.prompt_version, 1);
+	assert_eq!(document.prompt_version, 2);
 	assert_eq!(document.file_map.len(), 2);
 	assert!(document.file_map.contains_key("intro.md"));
 	assert!(document.file_map.contains_key("code.rs"));
+	let intro_entry = document.file_map.get("intro.md").ok_or("expected intro.md entry")?;
+	assert_eq!(intro_entry.topics, vec!["stub".to_string(), "test".to_string()]);
 	assert!(document.folder_map.is_empty());
 
 	let journal_file = destination.join(".tmp-zmapr").join("content-map.journal.jsonl");
