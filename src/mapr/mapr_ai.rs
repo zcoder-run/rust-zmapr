@@ -34,7 +34,6 @@ pub struct StubAiClient {
 /// Real genai-backed AI client placeholder.
 #[derive(Debug, Clone)]
 pub struct GenaiAiClient {
-	provider: String,
 	model: String,
 	client: Option<GenaiClient>,
 }
@@ -44,9 +43,9 @@ pub struct GenaiAiClient {
 // region:    --- Implementations
 
 impl MaprAiSelector {
-	pub fn create_client(&self, provider: &str, model: &str) -> Arc<dyn MaprAiClient> {
+	pub fn create_client(&self, model: &str) -> Arc<dyn MaprAiClient> {
 		match self {
-			Self::Real => Arc::new(GenaiAiClient::new(provider, model)),
+			Self::Real => Arc::new(GenaiAiClient::new(model)),
 			Self::Stub => Arc::new(StubAiClient::default()),
 			Self::Custom(client) => client.clone(),
 		}
@@ -67,9 +66,8 @@ impl StubAiClient {
 }
 
 impl GenaiAiClient {
-	pub fn new(provider: impl Into<String>, model: impl Into<String>) -> Self {
+	pub fn new(model: impl Into<String>) -> Self {
 		Self {
-			provider: provider.into(),
 			model: model.into(),
 			client: GenaiClient::new().ok(),
 		}
@@ -78,10 +76,6 @@ impl GenaiAiClient {
 	pub fn with_client(mut self, client: GenaiClient) -> Self {
 		self.client = Some(client);
 		self
-	}
-
-	pub fn provider(&self) -> &str {
-		&self.provider
 	}
 
 	pub fn model(&self) -> &str {
@@ -117,11 +111,7 @@ impl MaprAiClient for StubAiClient {
 
 impl MaprAiClient for GenaiAiClient {
 	fn complete<'a>(&'a self, prompt: &'a str) -> BoxFuture<'a, crate::Result<String>> {
-		let model_name = if !self.provider.is_empty() && !self.model.contains(':') && !self.model.contains('/') {
-			format!("{}:{}", self.provider, self.model)
-		} else {
-			self.model.clone()
-		};
+		let model_name = self.model.clone();
 		let client = self.client.clone();
 		let prompt_owned = prompt.to_string();
 
@@ -164,17 +154,17 @@ pub fn get_active_ai_selector() -> MaprAiSelector {
 	ACTIVE_SELECTOR.read().ok().and_then(|guard| guard.clone()).unwrap_or_default()
 }
 
-pub fn select_ai_client(selector: Option<&MaprAiSelector>, provider: &str, model: &str) -> Arc<dyn MaprAiClient> {
+pub fn select_ai_client(selector: Option<&MaprAiSelector>, model: &str) -> Arc<dyn MaprAiClient> {
 	if let Some(explicit) = selector {
-		explicit.create_client(provider, model)
+		explicit.create_client(model)
 	} else {
 		let active = get_active_ai_selector();
-		active.create_client(provider, model)
+		active.create_client(model)
 	}
 }
 
-pub fn select_active_ai_client(provider: &str, model: &str) -> Arc<dyn MaprAiClient> {
-	select_ai_client(None, provider, model)
+pub fn select_active_ai_client(model: &str) -> Arc<dyn MaprAiClient> {
+	select_ai_client(None, model)
 }
 
 // endregion: --- Support
@@ -212,8 +202,7 @@ mod tests {
 
 	#[tokio::test]
 	async fn test_genai_client_creation_and_error() -> crate::Result<()> {
-		let client = GenaiAiClient::new("mock-provider", "mock-model");
-		assert_eq!(client.provider(), "mock-provider");
+		let client = GenaiAiClient::new("mock-model");
 		assert_eq!(client.model(), "mock-model");
 
 		let result = client.complete("irrelevant input").await;
@@ -224,12 +213,12 @@ mod tests {
 
 	#[tokio::test]
 	async fn test_selector_and_active_override() -> crate::Result<()> {
-		let client = select_ai_client(Some(&MaprAiSelector::Stub), "openai", "gpt-5");
+		let client = select_ai_client(Some(&MaprAiSelector::Stub), "gpt-5");
 		let response = client.complete("test prompt").await?;
 		assert!(response.contains("<FILE_INFO>"));
 
 		set_active_ai_selector(Some(MaprAiSelector::Stub));
-		let active_client = select_active_ai_client("openai", "gpt-5");
+		let active_client = select_active_ai_client("gpt-5");
 		let active_resp = active_client.complete("test prompt").await?;
 		assert!(active_resp.contains("<FILE_INFO>"));
 

@@ -13,7 +13,7 @@ fn test_process_options_process_content_chainable_configuration() -> Result<()> 
 		.with_fetch(LocalFetchRequest::new("tests-data/source").with_copy_local_files(true))
 		.with_sanitize(SanitizeOptions::default().with_slim_html(true).with_convert_to_markdown(true))
 		.with_ai_augment(AiAugmentOptions::new("initial-provider", "initial-model"))
-		.with_content_map(ContentMapOptions::new("map-provider", "map-model"))
+		.with_content_map(ContentMapOptions::new("map-model"))
 		.with_resume(true)
 		.with_max_concurrency(3);
 
@@ -53,7 +53,6 @@ fn test_process_options_process_content_chainable_configuration() -> Result<()> 
 		.content_map
 		.as_ref()
 		.ok_or("Process options should contain Content Map options")?;
-	assert_eq!(content_map.provider, "map-provider");
 	assert_eq!(content_map.model, "map-model");
 
 	Ok(())
@@ -164,8 +163,7 @@ fn test_process_options_ai_augment_chainable_configuration() -> Result<()> {
 #[test]
 fn test_process_options_content_map_chainable_configuration() -> Result<()> {
 	// -- Setup & Fixtures
-	let options = ContentMapOptions::new("initial-provider", "initial-model")
-		.with_provider("updated-provider")
+	let options = ContentMapOptions::new("initial-model")
 		.with_model("updated-model")
 		.with_journal_path("tests-data/.tmp/content-map.journal.jsonl")
 		.with_reuse_unchanged_records(false)
@@ -176,7 +174,6 @@ fn test_process_options_content_map_chainable_configuration() -> Result<()> {
 	// -- Exec
 
 	// -- Check
-	assert_eq!(options.provider, "updated-provider");
 	assert_eq!(options.model, "updated-model");
 	assert!(!options.reuse_unchanged_records);
 	assert!(!options.retain_journal);
@@ -192,7 +189,7 @@ fn test_process_options_content_map_chainable_configuration() -> Result<()> {
 		Path::new("tests-data/.tmp/content-map.journal.jsonl")
 	);
 
-	let default_options = ContentMapOptions::new("initial-provider", "initial-model");
+	let default_options = ContentMapOptions::new("initial-model");
 	assert_eq!(default_options.max_size, Some(200_000));
 	assert_eq!(default_options.max_cost, None);
 
@@ -203,7 +200,7 @@ fn test_process_options_content_map_chainable_configuration() -> Result<()> {
 async fn test_process_options_content_map_validation_zero_max_size() -> Result<()> {
 	// -- Setup & Fixtures
 	let options = ProcessContentOptions::new("tests-data/.tmp/invalid-max-size")
-		.with_content_map(ContentMapOptions::new("map-provider", "map-model").with_max_size(0));
+		.with_content_map(ContentMapOptions::new("map-model").with_max_size(0));
 
 	// -- Exec
 	let err = zmapr::process_content(options).await.err().ok_or("Expected validation error")?;
@@ -218,7 +215,7 @@ async fn test_process_options_content_map_validation_zero_max_size() -> Result<(
 async fn test_process_options_content_map_validation_negative_max_cost() -> Result<()> {
 	// -- Setup & Fixtures
 	let options = ProcessContentOptions::new("tests-data/.tmp/invalid-max-cost")
-		.with_content_map(ContentMapOptions::new("map-provider", "map-model").with_max_cost(-1.0));
+		.with_content_map(ContentMapOptions::new("map-model").with_max_cost(-1.0));
 
 	// -- Exec
 	let err = zmapr::process_content(options).await.err().ok_or("Expected validation error")?;

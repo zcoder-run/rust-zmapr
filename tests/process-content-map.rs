@@ -29,7 +29,7 @@ async fn test_process_content_map_with_stub_publishes_output_and_content_map() -
 	let options = ProcessContentOptions::new(path_text(&destination))
 		.with_fetch(LocalFetchRequest::new(path_text(&source_root)).with_copy_local_files(true))
 		.with_content_map(
-			ContentMapOptions::new("stub-provider", "stub-model")
+			ContentMapOptions::new("stub-model")
 				.with_max_size(200_000)
 				.with_retain_journal(true),
 		);
@@ -81,7 +81,6 @@ async fn test_process_content_map_with_stub_publishes_output_and_content_map() -
 	let content_str = fs::read_to_string(content_map_path.as_std_path())?;
 	let document: ContentMapDocument = serde_json::from_str(&content_str)?;
 	assert_eq!(document.version, 1);
-	assert_eq!(document.provider, "stub-provider");
 	assert_eq!(document.model, "stub-model");
 	assert_eq!(document.prompt_version, 1);
 	assert_eq!(document.file_map.len(), 2);
@@ -131,7 +130,7 @@ async fn test_process_content_map_journal_reuse_on_second_run() -> Result<()> {
 		ProcessContentOptions::new(path_text(&destination))
 			.with_fetch(LocalFetchRequest::new(path_text(&source_root)).with_copy_local_files(true))
 			.with_content_map(
-				ContentMapOptions::new("stub-provider", "stub-model")
+				ContentMapOptions::new("stub-model")
 					.with_reuse_unchanged_records(true)
 					.with_retain_journal(true),
 			)
@@ -193,7 +192,7 @@ async fn test_process_content_map_retain_journal_false_removes_journal() -> Resu
 
 	let options = ProcessContentOptions::new(path_text(&destination))
 		.with_fetch(LocalFetchRequest::new(path_text(&source_root)).with_copy_local_files(true))
-		.with_content_map(ContentMapOptions::new("stub-provider", "stub-model").with_retain_journal(false));
+		.with_content_map(ContentMapOptions::new("stub-model").with_retain_journal(false));
 
 	// -- Exec
 	let handle = process_content(options).await?;
@@ -240,7 +239,7 @@ async fn test_process_content_map_item_failure_is_recorded_and_stage_completes()
 
 	let options = ProcessContentOptions::new(path_text(&destination))
 		.with_fetch(LocalFetchRequest::new(path_text(&source_root)).with_copy_local_files(true))
-		.with_content_map(ContentMapOptions::new("custom-provider", "custom-model"));
+		.with_content_map(ContentMapOptions::new("custom-model"));
 
 	// -- Exec
 	let handle = process_content(options).await?;

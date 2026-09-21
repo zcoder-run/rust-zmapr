@@ -39,7 +39,6 @@ pub struct FolderMapEntry {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ContentMapDocument {
 	pub version: u32,
-	pub provider: String,
 	pub model: String,
 	pub prompt_version: u32,
 	pub generated_at: String,
@@ -51,7 +50,6 @@ pub struct ContentMapDocument {
 
 impl ContentMapDocument {
 	pub fn new(
-		provider: impl Into<String>,
 		model: impl Into<String>,
 		prompt_version: u32,
 		generated_at: impl Into<String>,
@@ -60,7 +58,6 @@ impl ContentMapDocument {
 	) -> Self {
 		Self {
 			version: 1,
-			provider: provider.into(),
 			model: model.into(),
 			prompt_version,
 			generated_at: generated_at.into(),
@@ -70,14 +67,12 @@ impl ContentMapDocument {
 	}
 
 	pub fn from_content_map(
-		provider: impl Into<String>,
 		model: impl Into<String>,
 		prompt_version: u32,
 		generated_at: impl Into<String>,
 		content_map: ContentMap,
 	) -> Self {
 		Self::new(
-			provider,
 			model,
 			prompt_version,
 			generated_at,

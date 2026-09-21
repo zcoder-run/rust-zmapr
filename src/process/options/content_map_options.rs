@@ -4,8 +4,6 @@ use simple_fs::SPath;
 
 #[derive(Debug, Clone)]
 pub struct ContentMapOptions {
-	/// Identifies the AI provider used to analyze content.
-	pub provider: String,
 	/// Identifies the provider model used to analyze content.
 	pub model: String,
 	/// Optional location of the durable JSONL progress journal.
@@ -25,10 +23,9 @@ pub struct ContentMapOptions {
 // region:    --- Constructors
 
 impl ContentMapOptions {
-	/// Creates content-map options for a provider and model.
-	pub fn new(provider: impl Into<String>, model: impl Into<String>) -> Self {
+	/// Creates content-map options for a model.
+	pub fn new(model: impl Into<String>) -> Self {
 		Self {
-			provider: provider.into(),
 			model: model.into(),
 			journal_path: None,
 			reuse_unchanged_records: true,
@@ -42,11 +39,6 @@ impl ContentMapOptions {
 // endregion: --- Constructors
 
 impl ContentMapOptions {
-	pub fn with_provider(mut self, provider: impl Into<String>) -> Self {
-		self.provider = provider.into();
-		self
-	}
-
 	pub fn with_model(mut self, model: impl Into<String>) -> Self {
 		self.model = model.into();
 		self

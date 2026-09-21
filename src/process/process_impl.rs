@@ -100,7 +100,12 @@ fn validate_request(options: &ProcessContentOptions) -> Result<WorkflowLayout> {
 	}
 
 	if let Some(content_map) = &options.content_map {
-		validate_ai_configuration(ProcessStage::AiContentMap, &content_map.provider, &content_map.model)?;
+		if content_map.model.trim().is_empty() {
+			return Err(Error::InvalidConfiguration(format!(
+				"{:?} requires a nonempty model",
+				ProcessStage::AiContentMap
+			)));
+		}
 		if let Some(max_size) = content_map.max_size
 			&& max_size == 0
 		{

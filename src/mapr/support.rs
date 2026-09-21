@@ -337,7 +337,6 @@ mod tests {
 		);
 
 		let document = ContentMapDocument::new(
-			"mock-provider",
 			"mock-model",
 			1,
 			"2026-09-20T20:15:16Z",
@@ -359,7 +358,6 @@ mod tests {
 		let parsed: ContentMapDocument = serde_json::from_str(&saved_content)?;
 		assert_eq!(parsed, document);
 		assert_eq!(parsed.version, 1);
-		assert_eq!(parsed.provider, "mock-provider");
 		assert_eq!(parsed.model, "mock-model");
 		assert_eq!(parsed.prompt_version, 1);
 		assert!(parsed.folder_map.is_empty());

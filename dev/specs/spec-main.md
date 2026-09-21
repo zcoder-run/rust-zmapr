@@ -165,7 +165,6 @@ AI Augment sends supported current artifacts to the configured provider and mode
 
 ```rust
 pub struct ContentMapOptions {
-    pub provider: String,
     pub model: String,
     pub journal_path: Option<SPath>,
     pub reuse_unchanged_records: bool,
@@ -175,7 +174,7 @@ pub struct ContentMapOptions {
 }
 ```
 
-AI Content Map analyzes the latest artifact set and publishes `content-map.json`. It is terminal, so it does not replace the current content artifacts. File and folder analysis is journaled in an append-only NDJSON file (`.zmapr/content-map.journal.jsonl` or a custom `journal_path`) with immediate record flushes and crash recovery. Records are reused when the journal header fingerprint (blake3 hash of provider, model, prompt version, and artifact root) matches and the item source content hash is unchanged. On header or version mismatch, the journal is invalidated and rebuilt from scratch. When `retain_journal` is false, the journal is removed upon successful publication.
+AI Content Map analyzes the latest artifact set and publishes `content-map.json`. It is terminal, so it does not replace the current content artifacts. File and folder analysis is journaled in an append-only NDJSON file (`.zmapr/content-map.journal.jsonl` or a custom `journal_path`) with immediate record flushes and crash recovery. Records are reused when the journal header fingerprint (blake3 hash of model, prompt version, and artifact root) matches and the item source content hash is unchanged. On header or version mismatch, the journal is invalidated and rebuilt from scratch. When `retain_journal` is false, the journal is removed upon successful publication.
 
 ## Internal pipeline
 
@@ -224,7 +223,7 @@ Validation occurs before destination mutation or stage execution. It checks:
 
 - At least one stage is enabled.
 - Concurrency is nonzero.
-- AI stages have nonempty provider and model values.
+AI Augment has nonempty provider and model values, and Content Map has a nonempty model.
 - Source path or web URL is structurally valid.
 - Downstream processing without Fetch has a valid existing Fetch cache and manifest.
 - Deferred stages return structured `Unsupported` errors.
@@ -267,7 +266,6 @@ pub struct ProcessFailure {
 ```rust
 pub struct ContentMapDocument {
     pub version: u32,
-    pub provider: String,
     pub model: String,
     pub prompt_version: u32,
     pub generated_at: String,
@@ -295,7 +293,7 @@ pub struct FolderMapEntry {
 }
 ```
 
-The serialized document `content-map.json` contains a provenance header (`version`, `provider`, `model`, `prompt_version`, `generated_at`) alongside `file_map` and `folder_map`. `file_map` indexes relative file paths to their summaries, usage guidance, public symbols, and topics. `folder_map` is currently emitted as an empty map for future folder summaries. Folder entries intentionally do not include code-specific public type or function fields.
+The serialized document `content-map.json` contains a provenance header (`version`, `model`, `prompt_version`, `generated_at`) alongside `file_map` and `folder_map`. `file_map` indexes relative file paths to their summaries, usage guidance, public symbols, and topics. `folder_map` is currently emitted as an empty map for future folder summaries. Folder entries intentionally do not include code-specific public type or function fields.
 
 ## Errors
 

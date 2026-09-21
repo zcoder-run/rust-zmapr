@@ -28,7 +28,7 @@ pub(crate) async fn execute_content_map(
 		.unwrap_or_else(|| context.journal.as_std_path());
 
 	let prompt_version = PROMPT_VERSION;
-	let header = JournalHeader::new(&options.provider, &options.model, prompt_version, input.root.as_str());
+	let header = JournalHeader::new(&options.model, prompt_version, input.root.as_str());
 	let (reuse_index, appender) = init_or_load_journal(journal_path, &header)?;
 
 	let mut completed_items = Vec::new();
@@ -143,7 +143,7 @@ pub(crate) async fn execute_content_map(
 	}
 
 	let semaphore = Arc::new(tokio::sync::Semaphore::new(context.max_concurrency.max(1)));
-	let ai_client = select_active_ai_client(&options.provider, &options.model);
+	let ai_client = select_active_ai_client(&options.model);
 	let mut join_set = tokio::task::JoinSet::new();
 
 	for (item, source_hash, content) in pending_items {
@@ -238,7 +238,6 @@ pub(crate) async fn execute_content_map(
 	failures.sort_by(|a, b| a.item.source.cmp(&b.item.source));
 
 	let document = ContentMapDocument::new(
-		&options.provider,
 		&options.model,
 		prompt_version,
 		format_utc_timestamp(),

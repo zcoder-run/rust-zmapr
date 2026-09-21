@@ -25,7 +25,6 @@ pub enum JournalRecordStatus {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct JournalHeader {
 	pub journal_version: u32,
-	pub provider: String,
 	pub model: String,
 	pub prompt_version: u32,
 	pub artifact_root: String,
@@ -78,8 +77,8 @@ pub struct JournalAppender {
 
 // region:    --- Public Functions
 
-pub fn compute_journal_fingerprint(provider: &str, model: &str, prompt_version: u32, artifact_root: &str) -> String {
-	let payload = format!("{provider}:{model}:{prompt_version}:{artifact_root}");
+pub fn compute_journal_fingerprint(model: &str, prompt_version: u32, artifact_root: &str) -> String {
+	let payload = format!("{model}:{prompt_version}:{artifact_root}");
 	hash_file_bytes(payload.as_bytes())
 }
 
@@ -213,18 +212,15 @@ pub fn load_journal(
 
 impl JournalHeader {
 	pub fn new(
-		provider: impl Into<String>,
 		model: impl Into<String>,
 		prompt_version: u32,
 		artifact_root: impl Into<String>,
 	) -> Self {
-		let provider = provider.into();
 		let model = model.into();
 		let artifact_root = artifact_root.into();
-		let fingerprint = compute_journal_fingerprint(&provider, &model, prompt_version, &artifact_root);
+		let fingerprint = compute_journal_fingerprint(&model, prompt_version, &artifact_root);
 		Self {
 			journal_version: CURRENT_JOURNAL_VERSION,
-			provider,
 			model,
 			prompt_version,
 			artifact_root,
@@ -236,7 +232,6 @@ impl JournalHeader {
 impl JournalRecord {
 	pub fn header(
 		journal_version: u32,
-		provider: impl Into<String>,
 		model: impl Into<String>,
 		prompt_version: u32,
 		artifact_root: impl Into<String>,
@@ -244,7 +239,6 @@ impl JournalRecord {
 	) -> Self {
 		Self::Header(JournalHeader {
 			journal_version,
-			provider: provider.into(),
 			model: model.into(),
 			prompt_version,
 			artifact_root: artifact_root.into(),
@@ -553,7 +547,7 @@ mod tests {
 		let test_dir = std::env::temp_dir().join(format!("zmapr_journal_rt_{}", std::process::id()));
 		let journal_path = test_dir.join("content-map.journal.jsonl");
 
-		let header = JournalHeader::new("mock-provider", "mock-model", 1, "src");
+		let header = JournalHeader::new("mock-model", 1, "src");
 
 		// -- Exec: create journal and append records
 		let (mut index, appender) = init_or_load_journal(&journal_path, &header)?;
@@ -646,7 +640,7 @@ mod tests {
 		let test_dir = std::env::temp_dir().join(format!("zmapr_journal_inv_{}", std::process::id()));
 		let journal_path = test_dir.join("content-map.journal.jsonl");
 
-		let header_v1 = JournalHeader::new("mock-provider", "model-v1", 1, "src");
+		let header_v1 = JournalHeader::new("model-v1", 1, "src");
 		let (_, appender) = init_or_load_journal(&journal_path, &header_v1)?;
 
 		let file_entry = FileMapEntry {
@@ -663,7 +657,7 @@ mod tests {
 		assert_eq!(content_before.lines().count(), 2);
 
 		// -- Exec: init with different model -> fingerprint mismatch
-		let header_v2 = JournalHeader::new("mock-provider", "model-v2", 1, "src");
+		let header_v2 = JournalHeader::new("model-v2", 1, "src");
 		let (new_index, _) = init_or_load_journal(&journal_path, &header_v2)?;
 
 		// -- Check: journal was rewritten and reuse index is empty
@@ -685,7 +679,7 @@ mod tests {
 		let test_dir = std::env::temp_dir().join(format!("zmapr_journal_trunc_{}", std::process::id()));
 		let journal_path = test_dir.join("content-map.journal.jsonl");
 
-		let header = JournalHeader::new("mock-provider", "mock-model", 1, "src");
+		let header = JournalHeader::new("mock-model", 1, "src");
 		let (_, appender) = init_or_load_journal(&journal_path, &header)?;
 
 		let valid_entry = FileMapEntry {
@@ -746,7 +740,7 @@ mod tests {
 		let test_dir = std::env::temp_dir().join(format!("zmapr_journal_err_{}", std::process::id()));
 		let journal_path = test_dir.join("content-map.journal.jsonl");
 
-		let header = JournalHeader::new("mock-provider", "mock-model", 1, "src");
+		let header = JournalHeader::new("mock-model", 1, "src");
 		let (_, appender) = init_or_load_journal(&journal_path, &header)?;
 
 		// Manually inject a malformed interior line followed by another line
