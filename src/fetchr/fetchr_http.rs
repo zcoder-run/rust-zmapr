@@ -1053,8 +1053,8 @@ https://docs.typesafe.ai/doc/page2.md#anchor
 
 		let test_id = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_millis();
 		let dest = SPath::from(format!("tests-data/.tmp/test_http_fetch_{test_id}"));
-		let fetch_cache = dest.join(".zmapr/fetch");
-		let manifest = dest.join(".zmapr/manifest.json");
+		let fetch_cache = dest.join(".tmp-zmapr/fetch");
+		let manifest = dest.join(".tmp-zmapr/manifest.json");
 
 		let request = WebFetchRequest::new(format!("http://127.0.0.1:{port}/"))
 			.with_follow_links(true)
@@ -1068,10 +1068,10 @@ https://docs.typesafe.ai/doc/page2.md#anchor
 			source: Some(crate::process::ContentSource::Web(request.source.clone())),
 			destination: dest.clone(),
 			fetch_cache: fetch_cache.clone(),
-			sanitize_output: dest.join(".zmapr/stages/sanitize"),
-			ai_augment_output: dest.join(".zmapr/stages/ai-augment"),
+			sanitize_output: dest.join(".tmp-zmapr/stages/sanitize"),
+			ai_augment_output: dest.join(".tmp-zmapr/stages/ai-augment"),
 			manifest: manifest.clone(),
-			journal: dest.join(".zmapr/content-map.journal.jsonl"),
+			journal: dest.join(".tmp-zmapr/content-map.journal.jsonl"),
 			content_map: dest.join("content-map.json"),
 			max_concurrency: 2,
 			resume: false,

@@ -169,7 +169,7 @@ fn validate_ai_configuration(stage: ProcessStage, provider: &str, model: &str) -
 
 fn resolve_layout(options: &ProcessContentOptions) -> WorkflowLayout {
 	let destination = options.destination.clone();
-	let metadata_root = destination.join(".zmapr");
+	let metadata_root = destination.join(".tmp-zmapr");
 
 	WorkflowLayout {
 		destination,

@@ -133,7 +133,7 @@ pub struct WebFetchOptions {
 
 Fetch selects local files or crawls websites. Common include and exclude patterns are shared across sources: include patterns are applied before exclusions, exclusions take precedence, and selected paths are sorted by stable relative path. Local directory traversal is recursive and skips symbolic links.
 
-For local sources, Fetch either copies files below `.zmapr/fetch` or retains their original paths according to `copy_local_files`. It records source-relative paths and stable content hashes.
+For local sources, Fetch either copies files below `.tmp-zmapr/fetch` or retains their original paths according to `copy_local_files`. It records source-relative paths and stable content hashes.
 
 Website Fetch crawls from the starting URL, scoping candidate links to the starting URL base folder, and optionally following links while respecting `same_host_only` and `max_depth` settings. When `llms` is enabled, Fetch probes for an `llms.txt` file at the remote base folder URL before crawling. If `llms.txt` is discovered and contains valid entries, Fetch downloads the listed documents directly, mirroring the remote URL folder hierarchy locally and using the final URL path segment for the file name. If `llms.txt` is absent, empty, or unparseable, Fetch transparently falls back to regular HTML link crawling. In regular HTML crawling, scoped download paths without a file extension automatically receive a default `.html` extension.
 
@@ -146,7 +146,7 @@ pub struct SanitizeOptions {
 }
 ```
 
-Sanitize reads supported UTF-8 text and HTML artifacts, optionally removes nonessential HTML structure, and optionally converts HTML to Markdown. It writes a new artifact set below `.zmapr/stages/sanitize` without changing Fetch artifacts or source files.
+Sanitize reads supported UTF-8 text and HTML artifacts, optionally removes nonessential HTML structure, and optionally converts HTML to Markdown. It writes a new artifact set below `.tmp-zmapr/stages/sanitize` without changing Fetch artifacts or source files.
 
 Unsupported or non-UTF-8 files are reported as skipped. Item-level transformation failures are retained in the response.
 
@@ -159,7 +159,7 @@ pub struct AiAugmentOptions {
 }
 ```
 
-AI Augment sends supported current artifacts to the configured provider and model, then writes augmented results below `.zmapr/stages/ai-augment`. Provider and model values must be nonempty.
+AI Augment sends supported current artifacts to the configured provider and model, then writes augmented results below `.tmp-zmapr/stages/ai-augment`. Provider and model values must be nonempty.
 
 ### AI Content Map
 
@@ -174,7 +174,7 @@ pub struct ContentMapOptions {
 }
 ```
 
-AI Content Map analyzes the latest artifact set and publishes `content-map.json`. It is terminal, so it does not replace the current content artifacts. File and folder analysis is journaled in an append-only NDJSON file (`.zmapr/content-map.journal.jsonl` or a custom `journal_path`) with immediate record flushes and crash recovery. Records are reused when the journal header fingerprint (blake3 hash of model, prompt version, and artifact root) matches and the item source content hash is unchanged. On header or version mismatch, the journal is invalidated and rebuilt from scratch. When `retain_journal` is false, the journal is removed upon successful publication.
+AI Content Map analyzes the latest artifact set and publishes `content-map.json`. It is terminal, so it does not replace the current content artifacts. File and folder analysis is journaled in an append-only NDJSON file (`.tmp-zmapr/content-map.journal.jsonl` or a custom `journal_path`) with immediate record flushes and crash recovery. Records are reused when the journal header fingerprint (blake3 hash of model, prompt version, and artifact root) matches and the item source content hash is unchanged. On header or version mismatch, the journal is invalidated and rebuilt from scratch. When `retain_journal` is false, the journal is removed upon successful publication.
 
 ## Internal pipeline
 
@@ -205,7 +205,7 @@ All generated state is rooted at the configured destination:
 
 ```text
 <destination>/
-├── .zmapr/
+├── .tmp-zmapr/
 │   ├── fetch/
 │   ├── stages/
 │   │   ├── sanitize/

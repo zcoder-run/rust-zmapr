@@ -88,7 +88,7 @@ async fn test_process_content_map_with_stub_publishes_output_and_content_map() -
 	assert!(document.file_map.contains_key("code.rs"));
 	assert!(document.folder_map.is_empty());
 
-	let journal_file = destination.join(".zmapr").join("content-map.journal.jsonl");
+	let journal_file = destination.join(".tmp-zmapr").join("content-map.journal.jsonl");
 	assert!(journal_file.is_file());
 
 	let has_stage_started = progress_events.iter().any(|ev| {
@@ -202,7 +202,7 @@ async fn test_process_content_map_retain_journal_false_removes_journal() -> Resu
 	let content_map_path = output.content_map_path.as_ref().ok_or("expected content_map_path")?;
 	assert!(content_map_path.is_file());
 
-	let journal_file = destination.join(".zmapr").join("content-map.journal.jsonl");
+	let journal_file = destination.join(".tmp-zmapr").join("content-map.journal.jsonl");
 	assert!(!journal_file.exists());
 
 	set_active_ai_selector(None);

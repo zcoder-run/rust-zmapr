@@ -106,7 +106,7 @@ async fn test_process_fetch_copies_directory_artifacts_and_publishes_manifest() 
 	assert!(second_path.is_file());
 	assert_eq!(fs::read(second_path.as_std_path())?, b"beta\n".to_vec());
 
-	let expected_root = destination.join(".zmapr").join("fetch");
+	let expected_root = destination.join(".tmp-zmapr").join("fetch");
 	let content_root: &Path = output.content_root.as_ref();
 	assert_eq!(content_root, expected_root.as_path());
 
@@ -320,7 +320,7 @@ async fn test_process_fetch_web_crawls_and_reports_progress() -> Result<()> {
 		vec!["index.html", "page1.html", "page2.html", "sub/page3.html"]
 	);
 
-	let fetch_dir = destination.join(".zmapr").join("fetch");
+	let fetch_dir = destination.join(".tmp-zmapr").join("fetch");
 	assert!(fetch_dir.join("index.html").is_file());
 	assert!(fetch_dir.join("page1.html").is_file());
 	assert!(fetch_dir.join("page2.html").is_file());
@@ -412,7 +412,7 @@ async fn test_process_fetch_web_respects_max_depth() -> Result<()> {
 		.collect::<Vec<_>>();
 	assert_eq!(completed_sources, vec!["index.html", "level1.html"]);
 
-	let fetch_dir = destination.join(".zmapr").join("fetch");
+	let fetch_dir = destination.join(".tmp-zmapr").join("fetch");
 	assert!(fetch_dir.join("index.html").is_file());
 	assert!(fetch_dir.join("level1.html").is_file());
 	assert!(!fetch_dir.join("level2.html").exists());
@@ -504,7 +504,7 @@ async fn test_process_fetch_web_llms_discovery_and_fetch() -> Result<()> {
 		.collect::<Vec<_>>();
 	assert_eq!(completed_sources, vec!["concepts/arch.md", "intro.md", "llms.txt"]);
 
-	let fetch_dir = destination.join(".zmapr").join("fetch");
+	let fetch_dir = destination.join(".tmp-zmapr").join("fetch");
 	assert!(fetch_dir.join("llms.txt").is_file());
 	assert!(fetch_dir.join("intro.md").is_file());
 	assert!(fetch_dir.join("concepts").join("arch.md").is_file());
@@ -570,7 +570,7 @@ async fn test_process_fetch_web_llms_fallback_on_missing() -> Result<()> {
 		.collect::<Vec<_>>();
 	assert_eq!(completed_sources, vec!["index.html", "page1.html"]);
 
-	let fetch_dir = destination.join(".zmapr").join("fetch");
+	let fetch_dir = destination.join(".tmp-zmapr").join("fetch");
 	assert!(fetch_dir.join("index.html").is_file());
 	assert!(fetch_dir.join("page1.html").is_file());
 
@@ -630,7 +630,7 @@ async fn test_process_fetch_web_llms_fallback_on_empty() -> Result<()> {
 		.collect::<Vec<_>>();
 	assert_eq!(completed_sources, vec!["index.html", "page1.html"]);
 
-	let fetch_dir = destination.join(".zmapr").join("fetch");
+	let fetch_dir = destination.join(".tmp-zmapr").join("fetch");
 	assert!(fetch_dir.join("index.html").is_file());
 	assert!(fetch_dir.join("page1.html").is_file());
 
@@ -689,7 +689,7 @@ async fn test_process_fetch_web_extensionless_path_defaults_html() -> Result<()>
 		vec!["concepts/arch.html", "index.html", "intro.html"]
 	);
 
-	let fetch_dir = destination.join(".zmapr").join("fetch");
+	let fetch_dir = destination.join(".tmp-zmapr").join("fetch");
 	assert!(fetch_dir.join("index.html").is_file());
 	assert!(fetch_dir.join("intro.html").is_file());
 	assert!(fetch_dir.join("concepts").join("arch.html").is_file());
