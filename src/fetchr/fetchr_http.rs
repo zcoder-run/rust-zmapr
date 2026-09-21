@@ -16,10 +16,7 @@ use tokio::sync::Semaphore;
 
 // region:    --- Execution
 
-pub(crate) async fn execute_http_fetch(
-	request: &WebFetchRequest,
-	context: &WorkflowContext,
-) -> Result<StageOutput> {
+pub(crate) async fn execute_http_fetch(request: &WebFetchRequest, context: &WorkflowContext) -> Result<StageOutput> {
 	if context.max_concurrency == 0 {
 		return Err(Error::InvalidConfiguration(
 			"max_concurrency must be greater than zero".to_owned(),
@@ -184,13 +181,13 @@ pub(crate) async fn execute_http_fetch(
 						&& let Ok(html_text) = std::str::from_utf8(&fetched.body)
 						&& let Ok(links) = extract_links(html_text, &fetched.url)
 					{
-								for link in links {
-									if is_url_in_scope(&link, &base_folder_url, &request.options)
-										&& visited.insert(link.as_str().to_owned())
-									{
-										next_level.push(link);
-									}
-								}
+						for link in links {
+							if is_url_in_scope(&link, &base_folder_url, &request.options)
+								&& visited.insert(link.as_str().to_owned())
+							{
+								next_level.push(link);
+							}
+						}
 					}
 				}
 				Err((url, err_msg)) => {
@@ -319,9 +316,7 @@ async fn execute_llms_fetch(
 				stage: ProcessStage::Fetch,
 			};
 			skipped_items.push(process_item.clone());
-			context.progress.publish(ProcessProgress::ItemSkipped {
-				item: process_item,
-			});
+			context.progress.publish(ProcessProgress::ItemSkipped { item: process_item });
 		}
 	}
 
@@ -415,9 +410,7 @@ async fn execute_llms_fetch(
 				});
 
 				completed_items.push(process_item.clone());
-				context.progress.publish(ProcessProgress::ItemCompleted {
-					item: process_item,
-				});
+				context.progress.publish(ProcessProgress::ItemCompleted { item: process_item });
 			}
 			Err((url, err_msg)) => {
 				let relative = url_to_relative_path_with_options(&url, base_folder_url, false)

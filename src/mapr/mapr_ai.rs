@@ -1,5 +1,5 @@
-use genai::chat::{ChatMessage, ChatRequest};
 use genai::Client as GenaiClient;
+use genai::chat::{ChatMessage, ChatRequest};
 use std::fmt::Debug;
 use std::future::Future;
 use std::pin::Pin;
@@ -161,18 +161,10 @@ pub fn set_active_ai_selector(selector: Option<MaprAiSelector>) {
 }
 
 pub fn get_active_ai_selector() -> MaprAiSelector {
-	ACTIVE_SELECTOR
-		.read()
-		.ok()
-		.and_then(|guard| guard.clone())
-		.unwrap_or_default()
+	ACTIVE_SELECTOR.read().ok().and_then(|guard| guard.clone()).unwrap_or_default()
 }
 
-pub fn select_ai_client(
-	selector: Option<&MaprAiSelector>,
-	provider: &str,
-	model: &str,
-) -> Arc<dyn MaprAiClient> {
+pub fn select_ai_client(selector: Option<&MaprAiSelector>, provider: &str, model: &str) -> Arc<dyn MaprAiClient> {
 	if let Some(explicit) = selector {
 		explicit.create_client(provider, model)
 	} else {

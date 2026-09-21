@@ -6,9 +6,7 @@ use crate::fetchr::{FetchRequest, validate_source, validate_web_source};
 use crate::{ContentSource, Error, ProcessContentOptions, ProcessStage, Result};
 use simple_fs::SPath;
 
-pub async fn process_content(
-	options: ProcessContentOptions,
-) -> Result<ProcessContentHandle> {
+pub async fn process_content(options: ProcessContentOptions) -> Result<ProcessContentHandle> {
 	let layout = validate_request(&options)?;
 	let source = resolve_source(&options, &layout);
 	let (progress_tx, progress_rx) = new_progress_channel()?;
@@ -103,19 +101,19 @@ fn validate_request(options: &ProcessContentOptions) -> Result<WorkflowLayout> {
 
 	if let Some(content_map) = &options.content_map {
 		validate_ai_configuration(ProcessStage::AiContentMap, &content_map.provider, &content_map.model)?;
-		if let Some(max_size) = content_map.max_size {
-			if max_size == 0 {
-				return Err(Error::InvalidConfiguration(
-					"content_map.max_size must be greater than zero".into(),
-				));
-			}
+		if let Some(max_size) = content_map.max_size
+			&& max_size == 0
+		{
+			return Err(Error::InvalidConfiguration(
+				"content_map.max_size must be greater than zero".into(),
+			));
 		}
-		if let Some(max_cost) = content_map.max_cost {
-			if max_cost < 0.0 || max_cost.is_nan() {
-				return Err(Error::InvalidConfiguration(
-					"content_map.max_cost must be non-negative".into(),
-				));
-			}
+		if let Some(max_cost) = content_map.max_cost
+			&& (max_cost < 0.0 || max_cost.is_nan())
+		{
+			return Err(Error::InvalidConfiguration(
+				"content_map.max_cost must be non-negative".into(),
+			));
 		}
 	}
 

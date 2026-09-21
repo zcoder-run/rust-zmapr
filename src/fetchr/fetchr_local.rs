@@ -68,10 +68,7 @@ pub(crate) fn discover_local(request: &LocalFetchRequest) -> Result<LocalFetchDi
 	})
 }
 
-pub(crate) async fn execute_local_fetch(
-	request: &LocalFetchRequest,
-	context: &WorkflowContext,
-) -> Result<StageOutput> {
+pub(crate) async fn execute_local_fetch(request: &LocalFetchRequest, context: &WorkflowContext) -> Result<StageOutput> {
 	if context.max_concurrency == 0 {
 		return Err(Error::InvalidConfiguration(
 			"max_concurrency must be greater than zero".to_owned(),
@@ -322,10 +319,7 @@ pub(crate) fn validate_source(source: &LocalContentSource) -> Result<()> {
 
 // region:    --- Support
 
-fn try_resume_local_fetch(
-	request: &LocalFetchRequest,
-	context: &WorkflowContext,
-) -> Result<Option<StageOutput>> {
+fn try_resume_local_fetch(request: &LocalFetchRequest, context: &WorkflowContext) -> Result<Option<StageOutput>> {
 	let Some(manifest) = read_fetch_manifest_for_resume(&context.manifest) else {
 		return Ok(None);
 	};
@@ -751,8 +745,7 @@ mod tests {
 		write_file(root.join("keep.txt"), b"keep\n")?;
 		write_file(nested.join("skip.txt"), b"skip\n")?;
 
-		let request = LocalFetchRequest::new(path_text(&root))
-			.with_include(["**/*", "!nested/skip.txt"]);
+		let request = LocalFetchRequest::new(path_text(&root)).with_include(["**/*", "!nested/skip.txt"]);
 
 		// -- Exec
 		let discovery = discover_local(&request)?;

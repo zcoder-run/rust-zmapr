@@ -10,9 +10,8 @@ pub const PROMPT_VERSION: u32 = 1;
 
 static PROMPT_TEMPLATE: &str = include_str!("content-map.tmpl");
 
-static PROMPT_AC: LazyLock<std::result::Result<AhoCorasick, String>> = LazyLock::new(|| {
-	AhoCorasick::new(["{{file_path}}", "{{file_content}}"]).map_err(|e| e.to_string())
-});
+static PROMPT_AC: LazyLock<std::result::Result<AhoCorasick, String>> =
+	LazyLock::new(|| AhoCorasick::new(["{{file_path}}", "{{file_content}}"]).map_err(|e| e.to_string()));
 
 // endregion: --- Constants
 
@@ -166,7 +165,8 @@ mod tests {
 	#[test]
 	fn test_parse_file_info_fenced_no_lang() -> Result<()> {
 		// -- Setup & Fixtures
-		let raw = "<FILE_INFO>\n```\n{\n  \"summary\": \"No lang fence\",\n  \"when_to_use\": \"Test\"\n}\n```\n</FILE_INFO>";
+		let raw =
+			"<FILE_INFO>\n```\n{\n  \"summary\": \"No lang fence\",\n  \"when_to_use\": \"Test\"\n}\n```\n</FILE_INFO>";
 
 		// -- Exec
 		let entry = parse_file_info(raw)?;

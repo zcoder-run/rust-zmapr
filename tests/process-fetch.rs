@@ -17,8 +17,7 @@ async fn test_process_fetch_local_file_returns_output_and_progress() -> Result<(
 	let destination = root.join("destination");
 
 	// -- Exec
-	let mut handle = process_content(local_fetch_options(&source_path, &destination, false, false))
-	.await?;
+	let mut handle = process_content(local_fetch_options(&source_path, &destination, false, false)).await?;
 	let _progress_rx = handle.take_progress_rx().ok_or("Fetch should provide a progress receiver")?;
 	let output = handle.wait_output().await?;
 
@@ -487,11 +486,8 @@ async fn test_process_fetch_web_llms_discovery_and_fetch() -> Result<()> {
 	let destination = root.join("destination");
 	let start_url = format!("http://127.0.0.1:{port}/site/");
 
-	let options = ProcessContentOptions::new(path_text(&destination)).with_fetch(
-		WebFetchRequest::new(&start_url)
-			.with_llms(true)
-			.with_same_host_only(true),
-	);
+	let options = ProcessContentOptions::new(path_text(&destination))
+		.with_fetch(WebFetchRequest::new(&start_url).with_llms(true).with_same_host_only(true));
 
 	// -- Exec
 	let handle = process_content(options).await?;
@@ -506,10 +502,7 @@ async fn test_process_fetch_web_llms_discovery_and_fetch() -> Result<()> {
 		.iter()
 		.map(|item| item.source.as_str())
 		.collect::<Vec<_>>();
-	assert_eq!(
-		completed_sources,
-		vec!["concepts/arch.md", "intro.md", "llms.txt"]
-	);
+	assert_eq!(completed_sources, vec!["concepts/arch.md", "intro.md", "llms.txt"]);
 
 	let fetch_dir = destination.join(".zmapr").join("fetch");
 	assert!(fetch_dir.join("llms.txt").is_file());
@@ -760,9 +753,8 @@ fn local_fetch_options(
 	copy_local_files: bool,
 	resume: bool,
 ) -> ProcessContentOptions {
-	let mut options = ProcessContentOptions::new(path_text(destination)).with_fetch(
-		LocalFetchRequest::new(path_text(source_path)).with_copy_local_files(copy_local_files),
-	);
+	let mut options = ProcessContentOptions::new(path_text(destination))
+		.with_fetch(LocalFetchRequest::new(path_text(source_path)).with_copy_local_files(copy_local_files));
 	options.resume = resume;
 	options
 }

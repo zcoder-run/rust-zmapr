@@ -1,7 +1,6 @@
+use crate::process::{LocalContentSource, WebContentSource};
 use serde::{Deserialize, Serialize};
 use simple_fs::SPath;
-
-use crate::process::{LocalContentSource, WebContentSource};
 
 // region:    --- Types
 

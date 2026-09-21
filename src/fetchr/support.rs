@@ -137,9 +137,7 @@ fn match_segments(path: &[&str], pattern: &[&str]) -> bool {
 				(0..=path.len()).any(|idx| match_segments(&path[idx..], &pattern[1..]))
 			}
 		}
-		(Some(p), Some(pat)) if segment_matches(p, pat) => {
-			match_segments(&path[1..], &pattern[1..])
-		}
+		(Some(p), Some(pat)) if segment_matches(p, pat) => match_segments(&path[1..], &pattern[1..]),
 		_ => false,
 	}
 }
@@ -185,9 +183,7 @@ pub(crate) fn is_path_selected(relative_path: &str, common: &FetchCommonOptions)
 	let included = if include_patterns.is_empty() {
 		true
 	} else {
-		include_patterns
-			.iter()
-			.any(|pat| path_matches_glob(relative_path, pat))
+		include_patterns.iter().any(|pat| path_matches_glob(relative_path, pat))
 	};
 
 	if !included {

@@ -3,8 +3,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use zmapr::{
-	ContentMapDocument, ContentMapOptions, LocalFetchRequest, MaprAiClient, MaprAiSelector,
-	ProcessContentOptions, ProcessProgress, ProcessStage, process_content, set_active_ai_selector,
+	ContentMapDocument, ContentMapOptions, LocalFetchRequest, MaprAiClient, MaprAiSelector, ProcessContentOptions,
+	ProcessProgress, ProcessStage, process_content, set_active_ai_selector,
 };
 
 type Result<T> = core::result::Result<T, Box<dyn std::error::Error>>; // For tests.
@@ -59,10 +59,7 @@ async fn test_process_content_map_with_stub_publishes_output_and_content_map() -
 		.filter(|item| item.stage == ProcessStage::AiContentMap)
 		.collect::<Vec<_>>();
 	assert_eq!(mapr_completed.len(), 2);
-	let mapr_completed_sources = mapr_completed
-		.iter()
-		.map(|item| item.source.as_str())
-		.collect::<Vec<_>>();
+	let mapr_completed_sources = mapr_completed.iter().map(|item| item.source.as_str()).collect::<Vec<_>>();
 	assert_eq!(mapr_completed_sources, vec!["code.rs", "intro.md"]);
 
 	let mapr_skipped = output
@@ -71,10 +68,7 @@ async fn test_process_content_map_with_stub_publishes_output_and_content_map() -
 		.filter(|item| item.stage == ProcessStage::AiContentMap)
 		.collect::<Vec<_>>();
 	assert_eq!(mapr_skipped.len(), 2);
-	let mapr_skipped_sources = mapr_skipped
-		.iter()
-		.map(|item| item.source.as_str())
-		.collect::<Vec<_>>();
+	let mapr_skipped_sources = mapr_skipped.iter().map(|item| item.source.as_str()).collect::<Vec<_>>();
 	assert_eq!(mapr_skipped_sources, vec!["image.png", "oversize.txt"]);
 
 	let content_map_path = output.content_map_path.as_ref().ok_or("expected content_map_path")?;
@@ -199,9 +193,7 @@ async fn test_process_content_map_retain_journal_false_removes_journal() -> Resu
 
 	let options = ProcessContentOptions::new(path_text(&destination))
 		.with_fetch(LocalFetchRequest::new(path_text(&source_root)).with_copy_local_files(true))
-		.with_content_map(
-			ContentMapOptions::new("stub-provider", "stub-model").with_retain_journal(false),
-		);
+		.with_content_map(ContentMapOptions::new("stub-provider", "stub-model").with_retain_journal(false));
 
 	// -- Exec
 	let handle = process_content(options).await?;

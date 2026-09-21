@@ -1,4 +1,4 @@
-use crate::mapr::{hash_file_bytes, FileMapEntry, FolderMapEntry};
+use crate::mapr::{FileMapEntry, FolderMapEntry, hash_file_bytes};
 use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -78,12 +78,7 @@ pub struct JournalAppender {
 
 // region:    --- Public Functions
 
-pub fn compute_journal_fingerprint(
-	provider: &str,
-	model: &str,
-	prompt_version: u32,
-	artifact_root: &str,
-) -> String {
+pub fn compute_journal_fingerprint(provider: &str, model: &str, prompt_version: u32, artifact_root: &str) -> String {
 	let payload = format!("{provider}:{model}:{prompt_version}:{artifact_root}");
 	hash_file_bytes(payload.as_bytes())
 }
@@ -92,10 +87,7 @@ pub fn remove_journal(path: impl AsRef<Path>) -> Result<()> {
 	let path_ref = path.as_ref();
 	if path_ref.exists() {
 		std::fs::remove_file(path_ref).map_err(|err| {
-			Error::MalformedState(format!(
-				"failed to remove journal at {}: {err}",
-				path_ref.display()
-			))
+			Error::MalformedState(format!("failed to remove journal at {}: {err}", path_ref.display()))
 		})?;
 	}
 	Ok(())
@@ -382,11 +374,7 @@ impl JournalAppender {
 			std::fs::create_dir_all(parent)?;
 		}
 
-		let mut file = OpenOptions::new()
-			.create(true)
-			.write(true)
-			.truncate(true)
-			.open(&path_buf)?;
+		let mut file = OpenOptions::new().create(true).write(true).truncate(true).open(&path_buf)?;
 
 		let header_record = JournalRecord::Header(header.clone());
 		let line = serde_json::to_string(&header_record)
@@ -402,10 +390,7 @@ impl JournalAppender {
 
 	pub fn open_existing(path: impl AsRef<Path>) -> Result<Self> {
 		let path_buf = path.as_ref().to_path_buf();
-		let file = OpenOptions::new()
-			.write(true)
-			.append(true)
-			.open(&path_buf)?;
+		let file = OpenOptions::new().append(true).open(&path_buf)?;
 
 		Ok(Self {
 			path: path_buf,
@@ -457,10 +442,7 @@ fn extract_line_ranges(bytes: &[u8]) -> Vec<(usize, usize, usize)> {
 	line_ranges
 }
 
-fn load_and_clean_journal(
-	path: &Path,
-	expected_header: &JournalHeader,
-) -> Result<Option<JournalReuseIndex>> {
+fn load_and_clean_journal(path: &Path, expected_header: &JournalHeader) -> Result<Option<JournalReuseIndex>> {
 	let bytes = std::fs::read(path)?;
 	if bytes.is_empty() {
 		return Ok(None);
@@ -536,9 +518,7 @@ fn load_and_clean_journal(
 		}
 	};
 
-	if header.journal_version != expected_header.journal_version
-		|| header.fingerprint != expected_header.fingerprint
-	{
+	if header.journal_version != expected_header.journal_version || header.fingerprint != expected_header.fingerprint {
 		return Ok(None);
 	}
 
@@ -586,8 +566,16 @@ mod tests {
 			public_functions: vec!["main".to_string()],
 			topics: vec!["cli".to_string()],
 		};
-		appender.append(&JournalRecord::file_ok("src/main.rs", "hash-main-1", file_entry.clone()))?;
-		appender.append(&JournalRecord::file_failed("src/broken.rs", "hash-broken", "compile error"))?;
+		appender.append(&JournalRecord::file_ok(
+			"src/main.rs",
+			"hash-main-1",
+			file_entry.clone(),
+		))?;
+		appender.append(&JournalRecord::file_failed(
+			"src/broken.rs",
+			"hash-broken",
+			"compile error",
+		))?;
 
 		let folder_entry = FolderMapEntry {
 			summary: "Source folder".to_string(),
@@ -707,7 +695,11 @@ mod tests {
 			public_functions: vec![],
 			topics: vec![],
 		};
-		appender.append(&JournalRecord::file_ok("src/valid.rs", "hash-valid", valid_entry.clone()))?;
+		appender.append(&JournalRecord::file_ok(
+			"src/valid.rs",
+			"hash-valid",
+			valid_entry.clone(),
+		))?;
 
 		// Simulate incomplete append (truncated final line)
 		{
@@ -721,7 +713,10 @@ mod tests {
 
 		// -- Check: valid item is present, truncated one was safely skipped and removed from file
 		assert_eq!(recovered_index.file_count(), 1);
-		assert_eq!(recovered_index.get_file("src/valid.rs", "hash-valid"), Some(&valid_entry));
+		assert_eq!(
+			recovered_index.get_file("src/valid.rs", "hash-valid"),
+			Some(&valid_entry)
+		);
 
 		// Appending a new record works cleanly without syntax collision
 		let next_entry = FileMapEntry {
@@ -758,7 +753,10 @@ mod tests {
 		{
 			let mut file = OpenOptions::new().append(true).open(&journal_path)?;
 			writeln!(file, "not valid json")?;
-			writeln!(file, "{{\"kind\":\"file\",\"path\":\"src/a.rs\",\"source_hash\":\"h\",\"status\":\"ok\"}}")?;
+			writeln!(
+				file,
+				"{{\"kind\":\"file\",\"path\":\"src/a.rs\",\"source_hash\":\"h\",\"status\":\"ok\"}}"
+			)?;
 			file.flush()?;
 		}
 

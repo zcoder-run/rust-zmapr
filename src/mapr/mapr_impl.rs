@@ -1,12 +1,10 @@
 use crate::mapr::{
-	ContentMapDocument, FileMapEntry, JournalHeader, JournalRecord, hash_file_bytes,
-	init_or_load_journal, is_text_mappable, parse_file_info, publish_content_map,
-	remove_journal, render_file_prompt, select_active_ai_client, PROMPT_VERSION,
+	ContentMapDocument, FileMapEntry, JournalHeader, JournalRecord, PROMPT_VERSION, hash_file_bytes,
+	init_or_load_journal, is_text_mappable, parse_file_info, publish_content_map, remove_journal, render_file_prompt,
+	select_active_ai_client,
 };
 use crate::process::pipeline::{ArtifactItem, ArtifactSet, StageOutput, WorkflowContext};
-use crate::process::{
-	ContentMapOptions, ProcessFailure, ProcessItem, ProcessProgress, ProcessStage,
-};
+use crate::process::{ContentMapOptions, ProcessFailure, ProcessItem, ProcessProgress, ProcessStage};
 use crate::{Error, Result};
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -30,12 +28,7 @@ pub(crate) async fn execute_content_map(
 		.unwrap_or_else(|| context.journal.as_std_path());
 
 	let prompt_version = PROMPT_VERSION;
-	let header = JournalHeader::new(
-		&options.provider,
-		&options.model,
-		prompt_version,
-		input.root.as_str(),
-	);
+	let header = JournalHeader::new(&options.provider, &options.model, prompt_version, input.root.as_str());
 	let (reuse_index, appender) = init_or_load_journal(journal_path, &header)?;
 
 	let mut completed_items = Vec::new();
@@ -208,11 +201,7 @@ pub(crate) async fn execute_content_map(
 					Some(Ok((item.relative_path, process_item, entry)))
 				}
 				Err(err_msg) => {
-					let _ = appender.append(&JournalRecord::file_failed(
-						&item.relative_path,
-						&source_hash,
-						&err_msg,
-					));
+					let _ = appender.append(&JournalRecord::file_failed(&item.relative_path, &source_hash, &err_msg));
 					let failure = ProcessFailure {
 						item: ProcessItem {
 							source: item.relative_path.clone(),
@@ -279,10 +268,7 @@ pub(crate) async fn execute_content_map(
 // region:    --- Support
 
 fn format_utc_timestamp() -> String {
-	let secs = SystemTime::now()
-		.duration_since(UNIX_EPOCH)
-		.map(|d| d.as_secs())
-		.unwrap_or(0);
+	let secs = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
 	let sec = secs % 60;
 	let mins = secs / 60;
 	let min = mins % 60;

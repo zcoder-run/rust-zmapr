@@ -127,8 +127,7 @@ pub(crate) async fn run_pipeline(context: &WorkflowContext, options: &ProcessCon
 	}
 
 	if let Some(content_map_options) = options.content_map.as_ref() {
-		let map_output =
-			crate::mapr::execute_content_map(context, output.artifacts, content_map_options).await?;
+		let map_output = crate::mapr::execute_content_map(context, output.artifacts, content_map_options).await?;
 		output.completed_items.extend(map_output.completed_items);
 		output.skipped_items.extend(map_output.skipped_items);
 		output.failures.extend(map_output.failures);

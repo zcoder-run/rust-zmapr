@@ -51,7 +51,11 @@ pub fn is_text_mappable(media_type: Option<&str>, path: impl AsRef<Path>) -> boo
 		}
 	}
 
-	if let Some(ext) = path_ref.extension().and_then(|ext| ext.to_str()).map(|ext| ext.to_ascii_lowercase()) {
+	if let Some(ext) = path_ref
+		.extension()
+		.and_then(|ext| ext.to_str())
+		.map(|ext| ext.to_ascii_lowercase())
+	{
 		if is_known_text_extension(&ext) {
 			return true;
 		}
@@ -60,10 +64,13 @@ pub fn is_text_mappable(media_type: Option<&str>, path: impl AsRef<Path>) -> boo
 		}
 	}
 
-	if let Some(file_name) = path_ref.file_name().and_then(|name| name.to_str()).map(|name| name.to_ascii_lowercase()) {
-		if is_known_text_filename(&file_name) {
-			return true;
-		}
+	if let Some(file_name) = path_ref
+		.file_name()
+		.and_then(|name| name.to_str())
+		.map(|name| name.to_ascii_lowercase())
+		&& is_known_text_filename(&file_name)
+	{
+		return true;
 	}
 
 	false
@@ -146,29 +153,84 @@ fn is_binary_media_type(mime: &str) -> bool {
 fn is_known_text_extension(ext: &str) -> bool {
 	matches!(
 		ext,
-		"txt" | "text" | "md" | "markdown" | "mdown" | "mkdn" | "rst" | "adoc" | "asciidoc"
-			| "html" | "htm" | "xhtml" | "css" | "scss" | "sass" | "less"
-			| "js" | "mjs" | "cjs" | "ts" | "mts" | "cts" | "jsx" | "tsx" | "vue" | "svelte" | "astro"
-			| "json" | "jsonc" | "json5" | "toml" | "yaml" | "yml" | "xml" | "csv" | "tsv"
-			| "ini" | "conf" | "cfg" | "properties" | "env"
-			| "rs" | "c" | "h" | "cpp" | "hpp" | "cc" | "hh" | "cxx" | "hxx"
-			| "py" | "rb" | "go" | "java" | "kt" | "kts" | "swift" | "cs" | "fs" | "scala" | "clj" | "php" | "lua" | "pl" | "pm" | "r" | "dart" | "zig" | "nim" | "v"
-			| "sh" | "bash" | "zsh" | "fish" | "ps1" | "bat" | "cmd"
-			| "sql" | "graphql" | "gql" | "proto" | "prisma"
-			| "diff" | "patch" | "svg"
+		"txt"
+			| "text" | "md"
+			| "markdown"
+			| "mdown" | "mkdn"
+			| "rst" | "adoc"
+			| "asciidoc"
+			| "html" | "htm"
+			| "xhtml" | "css"
+			| "scss" | "sass"
+			| "less" | "js"
+			| "mjs" | "cjs"
+			| "ts" | "mts"
+			| "cts" | "jsx"
+			| "tsx" | "vue"
+			| "svelte"
+			| "astro" | "json"
+			| "jsonc" | "json5"
+			| "toml" | "yaml"
+			| "yml" | "xml"
+			| "csv" | "tsv"
+			| "ini" | "conf"
+			| "cfg" | "properties"
+			| "env" | "rs"
+			| "c" | "h"
+			| "cpp" | "hpp"
+			| "cc" | "hh"
+			| "cxx" | "hxx"
+			| "py" | "rb"
+			| "go" | "java"
+			| "kt" | "kts"
+			| "swift" | "cs"
+			| "fs" | "scala"
+			| "clj" | "php"
+			| "lua" | "pl"
+			| "pm" | "r"
+			| "dart" | "zig"
+			| "nim" | "v"
+			| "sh" | "bash"
+			| "zsh" | "fish"
+			| "ps1" | "bat"
+			| "cmd" | "sql"
+			| "graphql"
+			| "gql" | "proto"
+			| "prisma"
+			| "diff" | "patch"
+			| "svg"
 	)
 }
 
 fn is_known_binary_extension(ext: &str) -> bool {
 	matches!(
 		ext,
-		"png" | "jpg" | "jpeg" | "gif" | "webp" | "ico" | "bmp" | "tiff" | "avif"
-			| "pdf" | "doc" | "docx" | "xls" | "xlsx" | "ppt" | "pptx"
-			| "zip" | "tar" | "gz" | "tgz" | "bz2" | "xz" | "7z" | "rar"
-			| "wasm" | "exe" | "dll" | "so" | "dylib" | "bin" | "iso"
-			| "mp3" | "mp4" | "wav" | "ogg" | "webm" | "flac" | "m4a" | "mov" | "avi" | "mkv"
-			| "ttf" | "otf" | "woff" | "woff2" | "eot"
-			| "class" | "pyc" | "o" | "obj" | "rlib"
+		"png"
+			| "jpg" | "jpeg"
+			| "gif" | "webp"
+			| "ico" | "bmp"
+			| "tiff" | "avif"
+			| "pdf" | "doc"
+			| "docx" | "xls"
+			| "xlsx" | "ppt"
+			| "pptx" | "zip"
+			| "tar" | "gz"
+			| "tgz" | "bz2"
+			| "xz" | "7z"
+			| "rar" | "wasm"
+			| "exe" | "dll"
+			| "so" | "dylib"
+			| "bin" | "iso"
+			| "mp3" | "mp4"
+			| "wav" | "ogg"
+			| "webm" | "flac"
+			| "m4a" | "mov"
+			| "avi" | "mkv"
+			| "ttf" | "otf"
+			| "woff" | "woff2"
+			| "eot" | "class"
+			| "pyc" | "o"
+			| "obj" | "rlib"
 	)
 }
 
@@ -190,8 +252,7 @@ fn is_known_text_filename(file_name: &str) -> bool {
 			| ".gitignore"
 			| ".gitattributes"
 			| ".editorconfig"
-			| ".env"
-			| ".env.example"
+			| ".env" | ".env.example"
 			| ".dockerignore"
 	) {
 		return true;
@@ -211,24 +272,35 @@ pub fn publish_content_map(path: impl AsRef<Path>, document: &ContentMapDocument
 		.parent()
 		.ok_or_else(|| Error::MalformedState(format!("target path has no parent: {}", target_path.display())))?;
 
-	create_dir_all(parent)
-		.map_err(|error| Error::MalformedState(format!("failed to create parent directory {}: {error}", parent.display())))?;
+	create_dir_all(parent).map_err(|error| {
+		Error::MalformedState(format!(
+			"failed to create parent directory {}: {error}",
+			parent.display()
+		))
+	})?;
 
 	let json = serde_json::to_string_pretty(document)
 		.map_err(|error| Error::MalformedState(format!("failed to serialize content map: {error}")))?;
 	let content = format!("{json}\n");
 
-	let file_name = target_path
-		.file_name()
-		.and_then(|name| name.to_str())
-		.ok_or_else(|| Error::MalformedState(format!("target path has no valid file name: {}", target_path.display())))?;
+	let file_name = target_path.file_name().and_then(|name| name.to_str()).ok_or_else(|| {
+		Error::MalformedState(format!("target path has no valid file name: {}", target_path.display()))
+	})?;
 	let temporary_path = parent.join(format!("{file_name}.tmp"));
 
-	write(&temporary_path, content.as_bytes())
-		.map_err(|error| Error::MalformedState(format!("failed to write temporary content map {}: {error}", temporary_path.display())))?;
+	write(&temporary_path, content.as_bytes()).map_err(|error| {
+		Error::MalformedState(format!(
+			"failed to write temporary content map {}: {error}",
+			temporary_path.display()
+		))
+	})?;
 
-	rename(&temporary_path, target_path)
-		.map_err(|error| Error::MalformedState(format!("failed to replace content map {}: {error}", target_path.display())))?;
+	rename(&temporary_path, target_path).map_err(|error| {
+		Error::MalformedState(format!(
+			"failed to replace content map {}: {error}",
+			target_path.display()
+		))
+	})?;
 
 	Ok(())
 }
