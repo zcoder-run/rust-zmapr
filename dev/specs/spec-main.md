@@ -170,10 +170,12 @@ pub struct ContentMapOptions {
     pub journal_path: Option<SPath>,
     pub reuse_unchanged_records: bool,
     pub retain_journal: bool,
+    pub max_size: Option<usize>,
+    pub max_cost: Option<f64>,
 }
 ```
 
-AI Content Map analyzes the latest artifact set and publishes `content-map.json`. It is terminal, so it does not replace the current content artifacts. File and folder analysis can be journaled and reused when source hashes and relevant configuration remain unchanged.
+AI Content Map analyzes the latest artifact set and publishes `content-map.json`. It is terminal, so it does not replace the current content artifacts. File and folder analysis is journaled in an append-only NDJSON file (`.zmapr/content-map.journal.jsonl` or a custom `journal_path`) with immediate record flushes and crash recovery. Records are reused when the journal header fingerprint (blake3 hash of provider, model, prompt version, and artifact root) matches and the item source content hash is unchanged. On header or version mismatch, the journal is invalidated and rebuilt from scratch. When `retain_journal` is false, the journal is removed upon successful publication.
 
 ## Internal pipeline
 
@@ -263,6 +265,16 @@ pub struct ProcessFailure {
 ## Content-map contract
 
 ```rust
+pub struct ContentMapDocument {
+    pub version: u32,
+    pub provider: String,
+    pub model: String,
+    pub prompt_version: u32,
+    pub generated_at: String,
+    pub file_map: BTreeMap<String, FileMapEntry>,
+    pub folder_map: BTreeMap<String, FolderMapEntry>,
+}
+
 pub struct ContentMap {
     pub file_map: BTreeMap<String, FileMapEntry>,
     pub folder_map: BTreeMap<String, FolderMapEntry>,
@@ -283,7 +295,7 @@ pub struct FolderMapEntry {
 }
 ```
 
-The serialized map uses `file_map` and `folder_map`. Folder entries intentionally do not include code-specific public type or function fields.
+The serialized document `content-map.json` contains a provenance header (`version`, `provider`, `model`, `prompt_version`, `generated_at`) alongside `file_map` and `folder_map`. `file_map` indexes relative file paths to their summaries, usage guidance, public symbols, and topics. `folder_map` is currently emitted as an empty map for future folder summaries. Folder entries intentionally do not include code-specific public type or function fields.
 
 ## Errors
 
@@ -309,26 +321,34 @@ The first complete vertical slice is:
 - Website Fetch with `llms.txt` discovery, link parsing, and automatic HTML fallback.
 - Optional UTF-8 text and HTML Sanitize.
 - Fetch-only and Fetch-plus-Sanitize responses.
-Structured errors for AI Augment and AI Content Map stages.
+- AI Content Map stage generating `content-map.json` with NDJSON journal reuse.
+- Structured errors for the deferred AI Augment stage.
 
-The public contracts for Website Fetch, AI Augment, AI Content Map, manifests, journals, and complete resume behavior are established before their full execution is implemented.
+The public contracts for Website Fetch, AI Augment, manifests, journals, and complete resume behavior are established before their full execution is implemented.
 
 ## Module boundaries
 
-The crate root reexports the public error and process APIs. The `process` module owns public workflow types and privately contains pipeline implementation details:
+The crate root reexports the public error and process APIs. The `process` module owns public workflow types and privately contains pipeline implementation details, while `mapr` houses the content mapping engine:
 
 ```text
 src/
 ├── lib.rs
 ├── error.rs
+├── mapr/
+│   ├── mod.rs
+│   ├── content-map.tmpl
+│   ├── mapr_ai.rs
+│   ├── mapr_impl.rs
+│   ├── mapr_journal.rs
+│   ├── mapr_prompt.rs
+│   ├── mapr_types.rs
+│   └── support.rs
 ├── process/
 │   ├── mod.rs
-│   ├── map.rs
-│   ├── options.rs
+│   ├── options/
 │   ├── pipeline.rs
 │   ├── process_impl.rs
 │   ├── response.rs
-│   └── source.rs
 └── webc/
 ```
 

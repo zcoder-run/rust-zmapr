@@ -228,9 +228,9 @@ async fn test_process_fetch_web_source_invalid_url_returns_structured_error() ->
 }
 
 #[tokio::test]
-async fn test_process_fetch_deferred_ai_stages_remain_unsupported() -> Result<()> {
+async fn test_process_fetch_deferred_ai_augment_remains_unsupported() -> Result<()> {
 	// -- Setup & Fixtures
-	let root = fixture_root("test_process_fetch_deferred_ai_stages_remain_unsupported")?;
+	let root = fixture_root("test_process_fetch_deferred_ai_augment_remains_unsupported")?;
 	let source_path = root.join("source.txt");
 	fs::write(&source_path, b"source\n")?;
 	let destination = root.join("destination");
@@ -240,20 +240,15 @@ async fn test_process_fetch_deferred_ai_stages_remain_unsupported() -> Result<()
 	let _ = fetch_handle.wait_output().await?;
 
 	// -- Exec & Check
-	for options in [
-		ProcessContentOptions::new(path_text(&destination))
-			.with_ai_augment(AiAugmentOptions::new("test-provider", "test-model")),
-		ProcessContentOptions::new(path_text(&destination))
-			.with_content_map(ContentMapOptions::new("test-provider", "test-model")),
-	] {
-		let handle = process_content(options).await?;
-		let result = handle.wait_output().await;
-		let error = match result {
-			Err(error) => error,
-			Ok(_) => return Err("deferred AI stage should not complete".into()),
-		};
-		assert!(matches!(error, Error::Unsupported(_)));
-	}
+	let options = ProcessContentOptions::new(path_text(&destination))
+		.with_ai_augment(AiAugmentOptions::new("test-provider", "test-model"));
+	let handle = process_content(options).await?;
+	let result = handle.wait_output().await;
+	let error = match result {
+		Err(error) => error,
+		Ok(_) => return Err("deferred AI augment stage should not complete".into()),
+	};
+	assert!(matches!(error, Error::Unsupported(_)));
 
 	Ok(())
 }

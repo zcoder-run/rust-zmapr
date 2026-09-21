@@ -14,6 +14,10 @@ pub struct ContentMapOptions {
 	pub reuse_unchanged_records: bool,
 	/// Retains the journal after publishing the completed map.
 	pub retain_journal: bool,
+	/// Upper bound in bytes for mappable files. Larger files are skipped.
+	pub max_size: Option<usize>,
+	/// Upper bound in estimated cost. Not yet enforced.
+	pub max_cost: Option<f64>,
 }
 
 // endregion: --- Types
@@ -29,6 +33,8 @@ impl ContentMapOptions {
 			journal_path: None,
 			reuse_unchanged_records: true,
 			retain_journal: true,
+			max_size: Some(200_000),
+			max_cost: None,
 		}
 	}
 }
@@ -58,6 +64,16 @@ impl ContentMapOptions {
 
 	pub fn with_retain_journal(mut self, retain_journal: bool) -> Self {
 		self.retain_journal = retain_journal;
+		self
+	}
+
+	pub fn with_max_size(mut self, max_size: impl Into<Option<usize>>) -> Self {
+		self.max_size = max_size.into();
+		self
+	}
+
+	pub fn with_max_cost(mut self, max_cost: impl Into<Option<f64>>) -> Self {
+		self.max_cost = max_cost.into();
 		self
 	}
 }

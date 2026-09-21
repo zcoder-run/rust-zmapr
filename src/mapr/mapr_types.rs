@@ -1,8 +1,9 @@
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 // region:    --- Types
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ContentMap {
 	/// Maps source-relative file paths to file guidance.
 	pub file_map: BTreeMap<String, FileMapEntry>,
@@ -10,7 +11,7 @@ pub struct ContentMap {
 	pub folder_map: BTreeMap<String, FolderMapEntry>,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct FileMapEntry {
 	/// Concise description of the file's content.
 	pub summary: String,
@@ -24,7 +25,7 @@ pub struct FileMapEntry {
 	pub topics: Vec<String>,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct FolderMapEntry {
 	/// Concise description of the folder's responsibility.
 	pub summary: String,
@@ -34,4 +35,54 @@ pub struct FolderMapEntry {
 	pub topics: Vec<String>,
 }
 
+/// Serialized document written to `content-map.json`, carrying provenance metadata.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ContentMapDocument {
+	pub version: u32,
+	pub provider: String,
+	pub model: String,
+	pub prompt_version: u32,
+	pub generated_at: String,
+	pub file_map: BTreeMap<String, FileMapEntry>,
+	pub folder_map: BTreeMap<String, FolderMapEntry>,
+}
+
 // endregion: --- Types
+
+impl ContentMapDocument {
+	pub fn new(
+		provider: impl Into<String>,
+		model: impl Into<String>,
+		prompt_version: u32,
+		generated_at: impl Into<String>,
+		file_map: BTreeMap<String, FileMapEntry>,
+		folder_map: BTreeMap<String, FolderMapEntry>,
+	) -> Self {
+		Self {
+			version: 1,
+			provider: provider.into(),
+			model: model.into(),
+			prompt_version,
+			generated_at: generated_at.into(),
+			file_map,
+			folder_map,
+		}
+	}
+
+	pub fn from_content_map(
+		provider: impl Into<String>,
+		model: impl Into<String>,
+		prompt_version: u32,
+		generated_at: impl Into<String>,
+		content_map: ContentMap,
+	) -> Self {
+		Self::new(
+			provider,
+			model,
+			prompt_version,
+			generated_at,
+			content_map.file_map,
+			content_map.folder_map,
+		)
+	}
+}

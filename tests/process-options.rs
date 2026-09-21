@@ -169,7 +169,9 @@ fn test_process_options_content_map_chainable_configuration() -> Result<()> {
 		.with_model("updated-model")
 		.with_journal_path("tests-data/.tmp/content-map.journal.jsonl")
 		.with_reuse_unchanged_records(false)
-		.with_retain_journal(false);
+		.with_retain_journal(false)
+		.with_max_size(100_000)
+		.with_max_cost(2.5);
 
 	// -- Exec
 
@@ -178,6 +180,8 @@ fn test_process_options_content_map_chainable_configuration() -> Result<()> {
 	assert_eq!(options.model, "updated-model");
 	assert!(!options.reuse_unchanged_records);
 	assert!(!options.retain_journal);
+	assert_eq!(options.max_size, Some(100_000));
+	assert_eq!(options.max_cost, Some(2.5));
 
 	let journal_path = options
 		.journal_path
@@ -187,6 +191,40 @@ fn test_process_options_content_map_chainable_configuration() -> Result<()> {
 		journal_path.as_std_path(),
 		Path::new("tests-data/.tmp/content-map.journal.jsonl")
 	);
+
+	let default_options = ContentMapOptions::new("initial-provider", "initial-model");
+	assert_eq!(default_options.max_size, Some(200_000));
+	assert_eq!(default_options.max_cost, None);
+
+	Ok(())
+}
+
+#[tokio::test]
+async fn test_process_options_content_map_validation_zero_max_size() -> Result<()> {
+	// -- Setup & Fixtures
+	let options = ProcessContentOptions::new("tests-data/.tmp/invalid-max-size")
+		.with_content_map(ContentMapOptions::new("map-provider", "map-model").with_max_size(0));
+
+	// -- Exec
+	let err = zmapr::process_content(options).await.err().ok_or("Expected validation error")?;
+
+	// -- Check
+	assert!(matches!(err, zmapr::Error::InvalidConfiguration(_)));
+
+	Ok(())
+}
+
+#[tokio::test]
+async fn test_process_options_content_map_validation_negative_max_cost() -> Result<()> {
+	// -- Setup & Fixtures
+	let options = ProcessContentOptions::new("tests-data/.tmp/invalid-max-cost")
+		.with_content_map(ContentMapOptions::new("map-provider", "map-model").with_max_cost(-1.0));
+
+	// -- Exec
+	let err = zmapr::process_content(options).await.err().ok_or("Expected validation error")?;
+
+	// -- Check
+	assert!(matches!(err, zmapr::Error::InvalidConfiguration(_)));
 
 	Ok(())
 }

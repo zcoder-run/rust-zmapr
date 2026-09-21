@@ -1,0 +1,27 @@
+Below is the text file content under the `FILE_CONTENT` tag. Extract the requested code-map information.
+
+Respond with a `FILE_INFO` tag like 
+<FILE_INFO>
+_file_raw_json_format_
+</FILE_INFO>
+
+Here is the `_file_raw_json_format_` schema 
+
+```typescript
+{
+	file_path: string,
+	kind: "text",
+	summary: string,             // short summary of the file, it's responsibility/purpose
+	when_to_use: string,         // concise information of when this file should be included in the context
+	public_types?: string[],     // list of public types this file exposes (if any)
+	public_functions?: string[], // list of public functions this file exposes (if any)
+}
+```
+
+`_file_raw_json_format_` should just be the json, no need to put it in markdown code bock. 
+
+Here is the file content
+
+<FILE_CONTENT file_path="{{file_path}}">
+{{file_content}}
+</FILE_CONTENT>

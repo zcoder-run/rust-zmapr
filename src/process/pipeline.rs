@@ -126,14 +126,13 @@ pub(crate) async fn run_pipeline(context: &WorkflowContext, options: &ProcessCon
 		.await?;
 	}
 
-	if options.content_map.is_some() {
-		output = execute_deferred_stage(
-			context,
-			output.artifacts,
-			ProcessStage::AiContentMap,
-			"AI content-map generation is deferred",
-		)
-		.await?;
+	if let Some(content_map_options) = options.content_map.as_ref() {
+		let map_output =
+			crate::mapr::execute_content_map(context, output.artifacts, content_map_options).await?;
+		output.completed_items.extend(map_output.completed_items);
+		output.skipped_items.extend(map_output.skipped_items);
+		output.failures.extend(map_output.failures);
+		output.artifacts = map_output.artifacts;
 	}
 
 	Ok(output)
