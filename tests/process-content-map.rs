@@ -90,8 +90,39 @@ async fn test_process_content_map_with_stub_publishes_output_and_content_map() -
 	assert_eq!(intro_entry.topics, vec!["stub".to_string(), "test".to_string()]);
 	assert!(document.folder_map.is_empty());
 
+	let mapr_completed_events = progress_events
+		.iter()
+		.filter_map(|ev| match ev {
+			ProcessProgress::ItemCompleted { item } if item.stage == ProcessStage::AiContentMap => Some(item),
+			_ => None,
+		})
+		.collect::<Vec<_>>();
+	assert_eq!(mapr_completed_events.len(), 2);
+	for item in &mapr_completed_events {
+		assert!(item.usage.is_some());
+	}
+
 	let journal_file = destination.join(".tmp-zmapr").join("content-map.journal.jsonl");
 	assert!(journal_file.is_file());
+	assert_eq!(fs::metadata(&journal_file)?.len(), 0);
+
+	let total_usage = output.total_usage.as_ref().ok_or("expected total_usage on output")?;
+	let sum_prompt: i32 = mapr_completed_events
+		.iter()
+		.filter_map(|item| item.usage.as_ref().and_then(|u| u.prompt_tokens))
+		.sum();
+	let sum_completion: i32 = mapr_completed_events
+		.iter()
+		.filter_map(|item| item.usage.as_ref().and_then(|u| u.completion_tokens))
+		.sum();
+	let sum_total: i32 = mapr_completed_events
+		.iter()
+		.filter_map(|item| item.usage.as_ref().and_then(|u| u.total_tokens))
+		.sum();
+
+	assert_eq!(total_usage.prompt_tokens, Some(sum_prompt));
+	assert_eq!(total_usage.completion_tokens, Some(sum_completion));
+	assert_eq!(total_usage.total_tokens, Some(sum_total));
 
 	let has_stage_started = progress_events.iter().any(|ev| {
 		matches!(
@@ -143,6 +174,10 @@ async fn test_process_content_map_journal_reuse_on_second_run() -> Result<()> {
 	let first_handle = process_content(run_options()).await?;
 	let first_output = first_handle.wait_output().await?;
 
+	let journal_file = destination.join(".tmp-zmapr").join("content-map.journal.jsonl");
+	assert!(journal_file.is_file());
+	assert!(fs::metadata(&journal_file)?.len() > 0);
+
 	let first_mapr_completed = first_output
 		.completed_items
 		.iter()
@@ -175,6 +210,8 @@ async fn test_process_content_map_journal_reuse_on_second_run() -> Result<()> {
 	let document: ContentMapDocument = serde_json::from_str(&content_str)?;
 	assert_eq!(document.file_map.len(), 1);
 	assert!(document.file_map.contains_key("intro.md"));
+
+	assert_eq!(second_output.total_usage, None);
 
 	set_active_ai_selector(None);
 	Ok(())
@@ -215,12 +252,14 @@ async fn test_process_content_map_retain_journal_false_removes_journal() -> Resu
 struct FailingAiClient;
 
 impl MaprAiClient for FailingAiClient {
-	fn complete<'a>(&'a self, prompt: &'a str) -> zmapr::BoxFuture<'a, zmapr::Result<String>> {
+	fn complete<'a>(&'a self, prompt: &'a str) -> zmapr::BoxFuture<'a, zmapr::Result<zmapr::MaprAiResponse>> {
 		Box::pin(async move {
 			if prompt.contains("fail.md") {
 				Err(zmapr::Error::custom("simulated AI provider failure"))
 			} else {
-				Ok("<FILE_INFO>\n{\"summary\": \"OK file\", \"when_to_use\": \"Usage\", \"public_types\": [], \"public_functions\": [], \"topics\": []}\n</FILE_INFO>".to_string())
+				Ok(zmapr::MaprAiResponse::new(
+					"<FILE_INFO>\n{\"summary\": \"OK file\", \"when_to_use\": \"Usage\", \"public_types\": [], \"public_functions\": [], \"topics\": []}\n</FILE_INFO>",
+				))
 			}
 		})
 	}
@@ -268,6 +307,93 @@ async fn test_process_content_map_item_failure_is_recorded_and_stage_completes()
 	assert_eq!(document.file_map.len(), 1);
 	assert!(document.file_map.contains_key("good.md"));
 	assert!(!document.file_map.contains_key("fail.md"));
+
+	let journal_file = destination.join(".tmp-zmapr").join("content-map.journal.jsonl");
+	assert!(journal_file.is_file());
+	assert!(fs::metadata(&journal_file)?.len() > 0);
+
+	set_active_ai_selector(None);
+	Ok(())
+}
+
+#[derive(Debug)]
+struct ExactUsageAiClient;
+
+impl MaprAiClient for ExactUsageAiClient {
+	fn complete<'a>(&'a self, _prompt: &'a str) -> zmapr::BoxFuture<'a, zmapr::Result<zmapr::MaprAiResponse>> {
+		Box::pin(async move {
+			let usage = genai::chat::Usage {
+				prompt_tokens: Some(100),
+				completion_tokens: Some(50),
+				total_tokens: Some(150),
+				..Default::default()
+			};
+			Ok(zmapr::MaprAiResponse::new(
+				"<FILE_INFO>\n{\"summary\": \"Summary\", \"when_to_use\": \"Usage\", \"public_types\": [], \"public_functions\": [], \"topics\": [\"topic\"]}\n</FILE_INFO>",
+			).with_usage(usage))
+		})
+	}
+}
+
+#[tokio::test]
+async fn test_process_content_map_exact_usage_and_journal_emptied() -> Result<()> {
+	let _guard = TEST_MUTEX.lock().await;
+	set_active_ai_selector(Some(MaprAiSelector::Custom(Arc::new(ExactUsageAiClient))));
+
+	// -- Setup & Fixtures
+	let root = fixture_root("test_process_content_map_exact_usage_and_journal_emptied")?;
+	let source_root = root.join("source");
+	fs::create_dir_all(&source_root)?;
+	fs::write(source_root.join("one.md"), b"# Doc 1\nFirst doc.")?;
+	fs::write(source_root.join("two.md"), b"# Doc 2\nSecond doc.")?;
+	let destination = root.join("destination");
+
+	let options = ProcessContentOptions::new(path_text(&destination))
+		.with_fetch(LocalFetchRequest::new(path_text(&source_root)).with_copy_local_files(true))
+		.with_content_map(ContentMapOptions::new("custom-model").with_retain_journal(true));
+
+	// -- Exec
+	let mut handle = process_content(options).await?;
+	let mut progress_rx = handle.take_progress_rx().ok_or("expected progress receiver")?;
+
+	let progress_task = tokio::spawn(async move {
+		let mut events = Vec::new();
+		while let Ok(event) = progress_rx.recv().await {
+			events.push(event);
+		}
+		events
+	});
+
+	let output = handle.wait_output().await?;
+	let progress_events = progress_task.await?;
+
+	// -- Check
+	assert!(output.failures.is_empty());
+	assert_eq!(output.completed_items.len(), 4);
+
+	let completed_mapr_events = progress_events
+		.iter()
+		.filter_map(|ev| match ev {
+			ProcessProgress::ItemCompleted { item } if item.stage == ProcessStage::AiContentMap => Some(item),
+			_ => None,
+		})
+		.collect::<Vec<_>>();
+	assert_eq!(completed_mapr_events.len(), 2);
+	for item in &completed_mapr_events {
+		let usage = item.usage.as_ref().ok_or("expected item usage")?;
+		assert_eq!(usage.prompt_tokens, Some(100));
+		assert_eq!(usage.completion_tokens, Some(50));
+		assert_eq!(usage.total_tokens, Some(150));
+	}
+
+	let total_usage = output.total_usage.as_ref().ok_or("expected aggregate total_usage")?;
+	assert_eq!(total_usage.prompt_tokens, Some(200));
+	assert_eq!(total_usage.completion_tokens, Some(100));
+	assert_eq!(total_usage.total_tokens, Some(300));
+
+	let journal_file = destination.join(".tmp-zmapr").join("content-map.journal.jsonl");
+	assert!(journal_file.is_file());
+	assert_eq!(fs::metadata(&journal_file)?.len(), 0);
 
 	set_active_ai_selector(None);
 	Ok(())

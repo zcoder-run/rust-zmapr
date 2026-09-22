@@ -131,6 +131,7 @@ pub(crate) async fn execute_local_fetch(request: &LocalFetchRequest, context: &W
 			source: item.relative_path.clone(),
 			output_path: Some(artifact_path.clone()),
 			stage: ProcessStage::Fetch,
+			usage: None,
 		};
 		let item_result = task
 			.await
@@ -155,6 +156,7 @@ pub(crate) async fn execute_local_fetch(request: &LocalFetchRequest, context: &W
 					source: item.relative_path.clone(),
 					output_path: None,
 					stage: ProcessStage::Fetch,
+					usage: None,
 				};
 				let failure = ProcessFailure {
 					item: failed_item,
@@ -421,6 +423,7 @@ fn build_reused_stage_output(
 			source: current_item.relative_path.clone(),
 			output_path: Some(artifact_path),
 			stage: ProcessStage::Fetch,
+			usage: None,
 		};
 
 		context.progress.publish(ProcessProgress::ItemSkipped {

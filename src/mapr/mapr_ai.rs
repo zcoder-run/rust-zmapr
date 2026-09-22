@@ -9,9 +9,16 @@ pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
 // region:    --- Types
 
+/// Result of an AI completion call containing the generated text and optional token usage.
+#[derive(Debug, Clone, Default)]
+pub struct MaprAiResponse {
+	pub content: String,
+	pub usage: Option<genai::chat::Usage>,
+}
+
 /// Trait abstracting AI completion calls for content mapping.
 pub trait MaprAiClient: Debug + Send + Sync {
-	fn complete<'a>(&'a self, prompt: &'a str) -> BoxFuture<'a, crate::Result<String>>;
+	fn complete<'a>(&'a self, prompt: &'a str) -> BoxFuture<'a, crate::Result<MaprAiResponse>>;
 }
 
 /// Selector determining which AI client implementation to instantiate.
@@ -29,6 +36,7 @@ pub enum MaprAiSelector {
 #[derive(Debug, Clone, Default)]
 pub struct StubAiClient {
 	custom_response: Option<String>,
+	custom_usage: Option<genai::chat::Usage>,
 }
 
 /// Real genai-backed AI client placeholder.
@@ -52,15 +60,35 @@ impl MaprAiSelector {
 	}
 }
 
+impl MaprAiResponse {
+	pub fn new(content: impl Into<String>) -> Self {
+		Self {
+			content: content.into(),
+			usage: None,
+		}
+	}
+
+	pub fn with_usage(mut self, usage: genai::chat::Usage) -> Self {
+		self.usage = Some(usage);
+		self
+	}
+}
+
 impl StubAiClient {
 	pub fn from_response(response: impl Into<String>) -> Self {
 		Self {
 			custom_response: Some(response.into()),
+			custom_usage: None,
 		}
 	}
 
 	pub fn with_response(mut self, response: impl Into<String>) -> Self {
 		self.custom_response = Some(response.into());
+		self
+	}
+
+	pub fn with_usage(mut self, usage: genai::chat::Usage) -> Self {
+		self.custom_usage = Some(usage);
 		self
 	}
 }
@@ -88,13 +116,13 @@ impl GenaiAiClient {
 // region:    --- Trait Implementations
 
 impl<T: ?Sized + MaprAiClient> MaprAiClient for Arc<T> {
-	fn complete<'a>(&'a self, prompt: &'a str) -> BoxFuture<'a, crate::Result<String>> {
+	fn complete<'a>(&'a self, prompt: &'a str) -> BoxFuture<'a, crate::Result<MaprAiResponse>> {
 		(**self).complete(prompt)
 	}
 }
 
 impl MaprAiClient for StubAiClient {
-	fn complete<'a>(&'a self, prompt: &'a str) -> BoxFuture<'a, crate::Result<String>> {
+	fn complete<'a>(&'a self, prompt: &'a str) -> BoxFuture<'a, crate::Result<MaprAiResponse>> {
 		let response = if let Some(custom) = &self.custom_response {
 			custom.clone()
 		} else {
@@ -104,13 +132,24 @@ impl MaprAiClient for StubAiClient {
 				"<FILE_INFO>\n{{\n  \"summary\": \"Stub summary for content ({short_hash})\",\n  \"when_to_use\": \"Consult when evaluating stub mapping.\",\n  \"public_types\": [],\n  \"public_functions\": [],\n  \"topics\": [\"stub\", \"test\"]\n}}\n</FILE_INFO>"
 			)
 		};
+		let usage = self.custom_usage.clone().unwrap_or_else(|| {
+			let prompt_tokens = (prompt.len() / 4).max(1) as i32;
+			let completion_tokens = (response.len() / 4).max(1) as i32;
+			let total_tokens = prompt_tokens + completion_tokens;
+			genai::chat::Usage {
+				prompt_tokens: Some(prompt_tokens),
+				completion_tokens: Some(completion_tokens),
+				total_tokens: Some(total_tokens),
+				..Default::default()
+			}
+		});
 
-		Box::pin(async move { Ok(response) })
+		Box::pin(async move { Ok(MaprAiResponse::new(response).with_usage(usage)) })
 	}
 }
 
 impl MaprAiClient for GenaiAiClient {
-	fn complete<'a>(&'a self, prompt: &'a str) -> BoxFuture<'a, crate::Result<String>> {
+	fn complete<'a>(&'a self, prompt: &'a str) -> BoxFuture<'a, crate::Result<MaprAiResponse>> {
 		let model_name = self.model.clone();
 		let client = self.client.clone();
 		let prompt_owned = prompt.to_string();
@@ -133,7 +172,7 @@ impl MaprAiClient for GenaiAiClient {
 				.ok_or_else(|| crate::Error::custom("genai response did not contain text content"))?
 				.to_string();
 
-			Ok(text)
+			Ok(MaprAiResponse::new(text).with_usage(chat_res.usage))
 		})
 	}
 }
@@ -180,11 +219,12 @@ mod tests {
 		let client = StubAiClient::default();
 		let response = client.complete("Sample file content to summarize").await?;
 
-		assert!(response.contains("<FILE_INFO>"));
-		assert!(response.contains("</FILE_INFO>"));
-		assert!(response.contains("\"summary\":"));
-		assert!(response.contains("\"when_to_use\":"));
-		assert!(response.contains("\"topics\":"));
+		assert!(response.content.contains("<FILE_INFO>"));
+		assert!(response.content.contains("</FILE_INFO>"));
+		assert!(response.content.contains("\"summary\":"));
+		assert!(response.content.contains("\"when_to_use\":"));
+		assert!(response.content.contains("\"topics\":"));
+		assert!(response.usage.is_some());
 
 		Ok(())
 	}
@@ -195,7 +235,7 @@ mod tests {
 		let client = StubAiClient::from_response(custom);
 		let response = client.complete("irrelevant input").await?;
 
-		assert_eq!(response, custom);
+		assert_eq!(response.content, custom);
 
 		Ok(())
 	}
@@ -215,12 +255,12 @@ mod tests {
 	async fn test_selector_and_active_override() -> crate::Result<()> {
 		let client = select_ai_client(Some(&MaprAiSelector::Stub), "gpt-5");
 		let response = client.complete("test prompt").await?;
-		assert!(response.contains("<FILE_INFO>"));
+		assert!(response.content.contains("<FILE_INFO>"));
 
 		set_active_ai_selector(Some(MaprAiSelector::Stub));
 		let active_client = select_active_ai_client("gpt-5");
 		let active_resp = active_client.complete("test prompt").await?;
-		assert!(active_resp.contains("<FILE_INFO>"));
+		assert!(active_resp.content.contains("<FILE_INFO>"));
 
 		// Reset active selector
 		set_active_ai_selector(None);

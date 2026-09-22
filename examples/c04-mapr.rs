@@ -4,13 +4,13 @@ use zmapr::{ContentMapOptions, ProcessContentOptions, WebFetchRequest, process_c
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
 	let options = ProcessContentOptions::new("examples/.out/c04-mapr")
 		.with_fetch(
-			WebFetchRequest::new("https://docs.typesafe.ai/introduction")
+			WebFetchRequest::new("https://docs.rs/genai/0.7.0-beta.23/genai/")
 				.with_same_host_only(true)
 				.with_follow_links(true)
 				.with_max_depth(1)
 				.with_llms(true),
 		)
-		.with_content_map(ContentMapOptions::new("gemini-3.5-flash-lite"));
+		.with_content_map(ContentMapOptions::new("gpt-5.6-luna"));
 
 	let handle = process_content(options).await?;
 	let output = handle.wait_output().await?;
@@ -23,6 +23,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 	for item in &output.completed_items {
 		println!(" - {}", item.source);
+	}
+
+	if let Some(usage) = &output.total_usage {
+		let input_tokens = usage.prompt_tokens.unwrap_or(0);
+		let output_tokens = usage.completion_tokens.unwrap_or(0);
+		let total_tokens = usage.total_tokens.unwrap_or(input_tokens + output_tokens);
+
+		println!("Total input tokens: {input_tokens}");
+		println!("Total output tokens: {output_tokens}");
+		println!("Total tokens: {total_tokens}");
+	} else {
+		println!("Total tokens: n/a");
 	}
 
 	Ok(())

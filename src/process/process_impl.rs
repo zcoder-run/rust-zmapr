@@ -55,6 +55,7 @@ fn process_content_output(
 	options: &ProcessContentOptions,
 	output: StageOutput,
 ) -> ProcessContentOutput {
+	let total_usage = output.total_usage();
 	ProcessContentOutput {
 		destination: context.destination.clone(),
 		manifest_path: context.manifest.is_file().then(|| context.manifest.clone()),
@@ -64,6 +65,7 @@ fn process_content_output(
 		completed_items: output.completed_items,
 		skipped_items: output.skipped_items,
 		failures: output.failures,
+		total_usage,
 	}
 }
 

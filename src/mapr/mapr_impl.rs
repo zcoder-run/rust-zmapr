@@ -44,6 +44,7 @@ pub(crate) async fn execute_content_map(
 				source: item.relative_path.clone(),
 				output_path: None,
 				stage: ProcessStage::AiContentMap,
+				usage: None,
 			};
 			context.progress.publish(ProcessProgress::ItemSkipped {
 				item: process_item.clone(),
@@ -60,6 +61,7 @@ pub(crate) async fn execute_content_map(
 						source: item.relative_path.clone(),
 						output_path: None,
 						stage: ProcessStage::AiContentMap,
+						usage: None,
 					},
 					message: format!("cannot access file {}: {err}", item.local_path),
 				};
@@ -78,6 +80,7 @@ pub(crate) async fn execute_content_map(
 				source: item.relative_path.clone(),
 				output_path: None,
 				stage: ProcessStage::AiContentMap,
+				usage: None,
 			};
 			context.progress.publish(ProcessProgress::ItemSkipped {
 				item: process_item.clone(),
@@ -94,6 +97,7 @@ pub(crate) async fn execute_content_map(
 						source: item.relative_path.clone(),
 						output_path: None,
 						stage: ProcessStage::AiContentMap,
+						usage: None,
 					},
 					message: format!("failed to read file {}: {err}", item.local_path),
 				};
@@ -112,6 +116,7 @@ pub(crate) async fn execute_content_map(
 					source: item.relative_path.clone(),
 					output_path: None,
 					stage: ProcessStage::AiContentMap,
+					usage: None,
 				};
 				context.progress.publish(ProcessProgress::ItemSkipped {
 					item: process_item.clone(),
@@ -130,6 +135,7 @@ pub(crate) async fn execute_content_map(
 				source: item.relative_path.clone(),
 				output_path: Some(context.content_map.clone()),
 				stage: ProcessStage::AiContentMap,
+				usage: None,
 			};
 			context.progress.publish(ProcessProgress::ItemSkipped {
 				item: process_item.clone(),
@@ -167,6 +173,7 @@ pub(crate) async fn execute_content_map(
 							source: item.relative_path.clone(),
 							output_path: None,
 							stage: ProcessStage::AiContentMap,
+							usage: None,
 						},
 						message: err.to_string(),
 					};
@@ -178,13 +185,15 @@ pub(crate) async fn execute_content_map(
 			};
 			let ai_res = client.complete(&prompt).await;
 
-			let result: std::result::Result<FileMapEntry, String> = match ai_res {
-				Ok(response) => parse_file_info(&response).map_err(|err| err.to_string()),
+			let result: std::result::Result<(FileMapEntry, Option<genai::chat::Usage>), String> = match ai_res {
+				Ok(response) => parse_file_info(&response.content)
+					.map(|entry| (entry, response.usage))
+					.map_err(|err| err.to_string()),
 				Err(err) => Err(err.to_string()),
 			};
 
 			match result {
-				Ok(entry) => {
+				Ok((entry, usage)) => {
 					let _ = appender.append(&JournalRecord::file_ok(
 						&item.relative_path,
 						&source_hash,
@@ -194,6 +203,7 @@ pub(crate) async fn execute_content_map(
 						source: item.relative_path.clone(),
 						output_path: Some(content_map_path),
 						stage: ProcessStage::AiContentMap,
+						usage,
 					};
 					progress.publish(ProcessProgress::ItemCompleted {
 						item: process_item.clone(),
@@ -207,6 +217,7 @@ pub(crate) async fn execute_content_map(
 							source: item.relative_path.clone(),
 							output_path: None,
 							stage: ProcessStage::AiContentMap,
+							usage: None,
 						},
 						message: err_msg,
 					};
@@ -248,6 +259,8 @@ pub(crate) async fn execute_content_map(
 
 	if !options.retain_journal {
 		remove_journal(journal_path)?;
+	} else if !context.resume && failures.is_empty() {
+		appender.empty()?;
 	}
 
 	context.progress.publish(ProcessProgress::StageCompleted {

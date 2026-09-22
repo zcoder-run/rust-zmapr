@@ -1,4 +1,5 @@
 use super::progress::{ProcessProgress, ProcessProgressPublisher};
+use super::response::compute_total_usage;
 use super::source::ContentSource;
 use super::{ProcessContentOptions, ProcessFailure, ProcessItem, ProcessStage};
 use crate::fetchr::{FetchRequest, execute_http_fetch, execute_local_fetch, load_prior_local_fetch};
@@ -64,6 +65,10 @@ impl StageOutput {
 			skipped_items: Vec::new(),
 			failures: Vec::new(),
 		}
+	}
+
+	pub(crate) fn total_usage(&self) -> Option<genai::chat::Usage> {
+		compute_total_usage(&self.completed_items)
 	}
 }
 

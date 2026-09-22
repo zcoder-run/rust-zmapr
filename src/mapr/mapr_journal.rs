@@ -3,7 +3,7 @@ use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs::OpenOptions;
-use std::io::Write;
+use std::io::{Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -88,6 +88,15 @@ pub fn remove_journal(path: impl AsRef<Path>) -> Result<()> {
 		std::fs::remove_file(path_ref).map_err(|err| {
 			Error::MalformedState(format!("failed to remove journal at {}: {err}", path_ref.display()))
 		})?;
+	}
+	Ok(())
+}
+
+pub fn empty_journal(path: impl AsRef<Path>) -> Result<()> {
+	let path_ref = path.as_ref();
+	if path_ref.exists() {
+		let file = OpenOptions::new().write(true).truncate(true).open(path_ref)?;
+		drop(file);
 	}
 	Ok(())
 }
@@ -400,6 +409,17 @@ impl JournalAppender {
 			.lock()
 			.map_err(|_| Error::MalformedState("failed to lock journal file".to_string()))?;
 		writeln!(file, "{line}")?;
+		file.flush()?;
+		Ok(())
+	}
+
+	pub fn empty(&self) -> Result<()> {
+		let mut file = self
+			.file
+			.lock()
+			.map_err(|_| Error::MalformedState("failed to lock journal file".to_string()))?;
+		file.set_len(0)?;
+		file.seek(SeekFrom::Start(0))?;
 		file.flush()?;
 		Ok(())
 	}
@@ -759,6 +779,52 @@ mod tests {
 		assert!(load_res.is_err());
 		let err_str = load_res.err().map(|e| e.to_string()).unwrap_or_default();
 		assert!(err_str.contains("malformed journal line 2"));
+
+		// Clean up
+		remove_journal(&journal_path)?;
+		std::fs::remove_dir_all(&test_dir)?;
+
+		Ok(())
+	}
+
+	#[test]
+	fn test_mapr_journal_empty_clears_file_and_reinitializes() -> Result<()> {
+		// -- Setup & Fixtures
+		let test_dir = std::env::temp_dir().join(format!("zmapr_journal_empty_{}", std::process::id()));
+		let journal_path = test_dir.join("content-map.journal.jsonl");
+
+		let header = JournalHeader::new("mock-model", 1, "src");
+		let (_, appender) = init_or_load_journal(&journal_path, &header)?;
+
+		let entry = FileMapEntry {
+			summary: "File entry".to_string(),
+			when_to_use: "Inspect".to_string(),
+			public_types: vec![],
+			public_functions: vec![],
+			topics: vec![],
+		};
+		appender.append(&JournalRecord::file_ok("src/a.rs", "hash-a", entry))?;
+
+		let meta_before = std::fs::metadata(&journal_path)?;
+		assert!(meta_before.len() > 0);
+
+		// -- Exec: empty journal
+		appender.empty()?;
+
+		// -- Check: file exists but is 0 bytes
+		assert!(journal_path.is_file());
+		let meta_after = std::fs::metadata(&journal_path)?;
+		assert_eq!(meta_after.len(), 0);
+
+		// Loading an empty journal returns None
+		let loaded = load_journal(&journal_path, &header.fingerprint, header.journal_version)?;
+		assert_eq!(loaded, None);
+
+		// Reopening reinitializes header properly
+		let (reloaded_index, _) = init_or_load_journal(&journal_path, &header)?;
+		assert_eq!(reloaded_index.file_count(), 0);
+		let meta_reinit = std::fs::metadata(&journal_path)?;
+		assert!(meta_reinit.len() > 0);
 
 		// Clean up
 		remove_journal(&journal_path)?;

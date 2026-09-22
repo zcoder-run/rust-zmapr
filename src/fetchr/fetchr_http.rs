@@ -106,6 +106,7 @@ pub(crate) async fn execute_http_fetch(request: &WebFetchRequest, context: &Work
 									source: relative_path.clone(),
 									output_path: None,
 									stage: ProcessStage::Fetch,
+									usage: None,
 								},
 								message: err.to_string(),
 							};
@@ -120,6 +121,7 @@ pub(crate) async fn execute_http_fetch(request: &WebFetchRequest, context: &Work
 									source: relative_path.clone(),
 									output_path: None,
 									stage: ProcessStage::Fetch,
+									usage: None,
 								},
 								message: err.to_string(),
 							};
@@ -142,6 +144,7 @@ pub(crate) async fn execute_http_fetch(request: &WebFetchRequest, context: &Work
 							source: relative_path.clone(),
 							output_path: Some(artifact_path.clone()),
 							stage: ProcessStage::Fetch,
+							usage: None,
 						};
 
 						manifest_items.push(FetchManifestItem {
@@ -168,6 +171,7 @@ pub(crate) async fn execute_http_fetch(request: &WebFetchRequest, context: &Work
 							source: relative_path.clone(),
 							output_path: None,
 							stage: ProcessStage::Fetch,
+							usage: None,
 						};
 						skipped_items.push(process_item.clone());
 						context.progress.publish(ProcessProgress::ItemSkipped { item: process_item });
@@ -197,6 +201,7 @@ pub(crate) async fn execute_http_fetch(request: &WebFetchRequest, context: &Work
 						source: relative,
 						output_path: None,
 						stage: ProcessStage::Fetch,
+						usage: None,
 					};
 					let failure = ProcessFailure {
 						item: failed_item,
@@ -268,6 +273,7 @@ async fn execute_llms_fetch(
 		source: llms_relative_path.clone(),
 		output_path: Some(llms_artifact_path.clone()),
 		stage: ProcessStage::Fetch,
+		usage: None,
 	};
 	manifest_items.push(FetchManifestItem {
 		source: probe.probe_url.as_str().to_owned(),
@@ -314,6 +320,7 @@ async fn execute_llms_fetch(
 				source: relative_path,
 				output_path: None,
 				stage: ProcessStage::Fetch,
+				usage: None,
 			};
 			skipped_items.push(process_item.clone());
 			context.progress.publish(ProcessProgress::ItemSkipped { item: process_item });
@@ -354,6 +361,7 @@ async fn execute_llms_fetch(
 							source: relative_path.clone(),
 							output_path: None,
 							stage: ProcessStage::Fetch,
+							usage: None,
 						},
 						message: err.to_string(),
 					};
@@ -368,6 +376,7 @@ async fn execute_llms_fetch(
 							source: relative_path.clone(),
 							output_path: None,
 							stage: ProcessStage::Fetch,
+							usage: None,
 						},
 						message: err.to_string(),
 					};
@@ -390,6 +399,7 @@ async fn execute_llms_fetch(
 					source: relative_path.clone(),
 					output_path: Some(artifact_path.clone()),
 					stage: ProcessStage::Fetch,
+					usage: None,
 				};
 
 				manifest_items.push(FetchManifestItem {
@@ -419,6 +429,7 @@ async fn execute_llms_fetch(
 					source: relative,
 					output_path: None,
 					stage: ProcessStage::Fetch,
+					usage: None,
 				};
 				let failure = ProcessFailure {
 					item: failed_item,
