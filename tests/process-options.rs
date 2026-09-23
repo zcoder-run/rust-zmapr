@@ -225,3 +225,20 @@ async fn test_process_options_content_map_validation_negative_max_cost() -> Resu
 
 	Ok(())
 }
+
+#[test]
+fn test_process_options_content_map_to_md_chainable_configuration() -> Result<()> {
+	// -- Setup & Fixtures
+	let default_options = ContentMapOptions::new("map-model");
+	let enabled_options = ContentMapOptions::new("map-model").with_to_md(true);
+	let disabled_options = ContentMapOptions::new("map-model").with_to_md(false);
+
+	// -- Exec
+
+	// -- Check
+	assert_eq!(default_options.to_md, None);
+	assert_eq!(enabled_options.to_md, Some(true));
+	assert_eq!(disabled_options.to_md, Some(false));
+
+	Ok(())
+}

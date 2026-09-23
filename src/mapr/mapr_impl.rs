@@ -1,7 +1,7 @@
 use crate::mapr::{
 	ContentMapDocument, FileMapEntry, JournalHeader, JournalRecord, PROMPT_VERSION, hash_file_bytes,
-	init_or_load_journal, is_text_mappable, parse_file_info, publish_content_map, remove_journal, render_file_prompt,
-	select_active_ai_client,
+	html_to_markdown, init_or_load_journal, is_html_item, is_text_mappable, parse_file_info, publish_content_map,
+	remove_journal, render_file_prompt, select_active_ai_client,
 };
 use crate::process::pipeline::{ArtifactItem, ArtifactSet, StageOutput, WorkflowContext};
 use crate::process::{ContentMapOptions, ProcessFailure, ProcessItem, ProcessProgress, ProcessStage};
@@ -145,7 +145,33 @@ pub(crate) async fn execute_content_map(
 			continue;
 		}
 
-		pending_items.push((item.clone(), source_hash, content_str.to_string()));
+		let prompt_content = if options.to_md.unwrap_or(true)
+			&& is_html_item(item.media_type.as_deref(), item.local_path.as_std_path())
+		{
+			match html_to_markdown(content_str) {
+				Ok(markdown) => markdown,
+				Err(err) => {
+					let failure = ProcessFailure {
+						item: ProcessItem {
+							source: item.relative_path.clone(),
+							output_path: None,
+							stage: ProcessStage::AiContentMap,
+							usage: None,
+						},
+						message: format!("failed to convert HTML to Markdown for {}: {err}", item.local_path),
+					};
+					context.progress.publish(ProcessProgress::ItemFailed {
+						failure: failure.clone(),
+					});
+					failures.push(failure);
+					continue;
+				}
+			}
+		} else {
+			content_str.to_string()
+		};
+
+		pending_items.push((item.clone(), source_hash, prompt_content));
 	}
 
 	let semaphore = Arc::new(tokio::sync::Semaphore::new(context.max_concurrency.max(1)));

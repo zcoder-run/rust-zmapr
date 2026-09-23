@@ -16,6 +16,8 @@ pub struct ContentMapOptions {
 	pub max_size: Option<usize>,
 	/// Upper bound in estimated cost. Not yet enforced.
 	pub max_cost: Option<f64>,
+	/// Converts HTML items to Markdown before building the AI content map. `None` means enabled (`true`).
+	pub to_md: Option<bool>,
 }
 
 // endregion: --- Types
@@ -32,6 +34,7 @@ impl ContentMapOptions {
 			retain_journal: true,
 			max_size: Some(200_000),
 			max_cost: None,
+			to_md: None,
 		}
 	}
 }
@@ -66,6 +69,11 @@ impl ContentMapOptions {
 
 	pub fn with_max_cost(mut self, max_cost: impl Into<Option<f64>>) -> Self {
 		self.max_cost = max_cost.into();
+		self
+	}
+
+	pub fn with_to_md(mut self, to_md: impl Into<Option<bool>>) -> Self {
+		self.to_md = to_md.into();
 		self
 	}
 }
