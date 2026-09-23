@@ -1,8 +1,7 @@
 use super::fetchr_types::FetchManifest;
 use crate::fetchr::FetchCommonOptions;
 use crate::{Error, Result};
-use sha2::{Digest, Sha256};
-use simple_fs::{SPath, ensure_dir, read_to_string};
+use simple_fs::{SPath, ensure_dir};
 use std::fs::{rename, write};
 use std::path::{Component, Path};
 
@@ -31,10 +30,13 @@ pub(crate) fn paths_equivalent(left: &Path, right: &Path) -> bool {
 }
 
 pub(crate) fn hash_file(path: &SPath) -> Result<String> {
-	let contents = read_to_string(path)?;
-	let digest = Sha256::digest(contents.as_bytes());
+	let contents = std::fs::read(path.as_std_path())?;
 
-	Ok(format!("{digest:x}"))
+	Ok(hash_bytes(&contents))
+}
+
+pub(crate) fn hash_bytes(contents: &[u8]) -> String {
+	bs58::encode(blake3::hash(contents).as_bytes()).into_string()
 }
 
 pub(crate) fn media_type_for(path: &Path) -> Option<String> {

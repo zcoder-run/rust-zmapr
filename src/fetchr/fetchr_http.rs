@@ -1,12 +1,11 @@
 use super::fetchr_types::{FETCH_MANIFEST_VERSION, FetchManifest, FetchManifestItem, FetchManifestOptions};
-use super::support::{ensure_parent, is_path_selected, media_type_for, path_to_string, write_fetch_manifest};
+use super::support::{ensure_parent, hash_bytes, is_path_selected, media_type_for, path_to_string, write_fetch_manifest};
 use crate::fetchr::{WebFetchOptions, WebFetchRequest};
 use crate::process::pipeline::{ArtifactItem, ArtifactSet, StageOutput, WorkflowContext};
 use crate::process::{ProcessFailure, ProcessItem, ProcessProgress, ProcessStage, WebContentSource};
 use crate::webc::{WebClient, new_client};
 use crate::{Error, Result};
 use reqwest::Url;
-use sha2::{Digest, Sha256};
 use simple_fs::{SPath, ensure_dir};
 use std::collections::HashSet;
 use std::fs::write;
@@ -266,8 +265,7 @@ async fn execute_llms_fetch(
 		.map_err(|err| Error::MalformedState(format!("failed to write llms.txt artifact: {err}")))?;
 
 	let llms_artifact_path_str = path_to_string(&llms_artifact_path)?;
-	let digest = Sha256::digest(&probe.body);
-	let llms_hash = format!("{digest:x}");
+	let llms_hash = hash_bytes(&probe.body);
 
 	let llms_process_item = ProcessItem {
 		source: llms_relative_path.clone(),
@@ -541,8 +539,7 @@ async fn fetch_single_url_with_options(
 		Err(err) => return Err((url.clone(), err.to_string())),
 	};
 
-	let digest = Sha256::digest(&bytes);
-	let content_hash = format!("{digest:x}");
+	let content_hash = hash_bytes(&bytes);
 
 	Ok(FetchedHttpResource {
 		url: url.clone(),

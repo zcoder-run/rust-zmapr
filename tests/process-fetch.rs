@@ -184,6 +184,38 @@ async fn test_process_fetch_resume_reuses_and_rebuilds_state() -> Result<()> {
 }
 
 #[tokio::test]
+async fn test_process_fetch_binary_file_hashes_and_resumes() -> Result<()> {
+	// -- Setup & Fixtures
+	let root = fixture_root("test_process_fetch_binary_file_hashes_and_resumes")?;
+	let source_path = root.join("binary.bin");
+	let contents = [0, 0xff, 0x80, 0x42];
+	fs::write(&source_path, contents)?;
+	let destination = root.join("destination");
+
+	// -- Exec
+	let first_handle = process_content(local_fetch_options(&source_path, &destination, true, false)).await?;
+	let first_output = first_handle.wait_output().await?;
+	let manifest_path = first_output.manifest_path.as_ref().ok_or("Fetch should publish a manifest")?;
+	let actual_hash = manifest_hash(manifest_path.as_std_path())?;
+
+	let second_handle = process_content(local_fetch_options(&source_path, &destination, true, true)).await?;
+	let second_output = second_handle.wait_output().await?;
+
+	// -- Check
+	assert_eq!(first_output.completed_items.len(), 1);
+	assert!(first_output.failures.is_empty());
+	let item = first_output.completed_items.first().ok_or("Fetch should complete the binary file")?;
+	let artifact_path = item.output_path.as_ref().ok_or("Fetch should copy the binary file")?;
+	assert_eq!(fs::read(artifact_path.as_std_path())?, contents);
+	assert_eq!(actual_hash, bs58::encode(blake3::hash(&contents).as_bytes()).into_string());
+	assert!(second_output.completed_items.is_empty());
+	assert_eq!(second_output.skipped_items.len(), 1);
+	assert!(second_output.failures.is_empty());
+
+	Ok(())
+}
+
+#[tokio::test]
 async fn test_process_fetch_invalid_local_source_returns_structured_error() -> Result<()> {
 	// -- Setup & Fixtures
 	let root = fixture_root("test_process_fetch_invalid_local_source_returns_structured_error")?;

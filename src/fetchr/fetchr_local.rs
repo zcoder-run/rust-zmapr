@@ -10,7 +10,6 @@ use crate::fetchr::{FetchCommonOptions, LocalFetchRequest};
 use crate::process::pipeline::{ArtifactItem, ArtifactSet, StageOutput, WorkflowContext};
 use crate::process::{LocalContentSource, ProcessFailure, ProcessItem, ProcessProgress, ProcessStage};
 use crate::{Error, Result};
-use sha2::{Digest, Sha256};
 use simple_fs::{SPath, ensure_dir, list_files};
 use std::fs::copy;
 use std::path::Path;
@@ -704,8 +703,7 @@ mod tests {
 		let local_path: &Path = item.local_path.as_ref();
 		assert_eq!(local_path, source_path.as_path());
 
-		let digest = Sha256::digest(contents);
-		let expected_hash = format!("{digest:x}");
+		let expected_hash = bs58::encode(blake3::hash(contents).as_bytes()).into_string();
 		assert_eq!(item.content_hash, expected_hash);
 
 		Ok(())
