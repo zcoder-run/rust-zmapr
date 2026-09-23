@@ -1,4 +1,4 @@
-use zmapr::{ContentMapOptions, ProcessContentOptions, WebFetchRequest, process_content};
+use zmapr::{ContentMapOptions, ProcessContentOptions, ProcessProgress, WebFetchRequest, process_content};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -10,10 +10,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 				.with_max_depth(1)
 				.with_llms(true),
 		)
-		.with_content_map(ContentMapOptions::new("gpt-5.6-luna"));
+		.with_content_map(ContentMapOptions::new("gpt-6-luna"));
 
-	let handle = process_content(options).await?;
+	let mut handle = process_content(options).await?;
+	let mut progress_rx = handle.take_progress_rx().ok_or("expected progress receiver")?;
+	let progress_task = tokio::spawn(async move {
+		while let Ok(event) = progress_rx.recv().await {
+			match event {
+				ProcessProgress::ItemCompleted { item } | ProcessProgress::ItemSkipped { item } => {
+					println!(" - {}", item.source);
+				}
+				ProcessProgress::ItemFailed { failure } => {
+					println!(" - (FAIL_ {}", failure.item.source);
+				}
+				_ => {}
+			}
+		}
+	});
+
 	let output = handle.wait_output().await?;
+	progress_task.await?;
 
 	println!("Fetched content into {}", output.content_root);
 	if let Some(map_path) = output.content_map_path {
@@ -21,10 +37,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 	}
 	println!("Completed items: {}", output.completed_items.len());
 
-	for item in &output.completed_items {
-		println!(" - {}", item.source);
-	}
-
+	println!();
 	if let Some(usage) = &output.total_usage {
 		let input_tokens = usage.prompt_tokens.unwrap_or(0);
 		let output_tokens = usage.completion_tokens.unwrap_or(0);
