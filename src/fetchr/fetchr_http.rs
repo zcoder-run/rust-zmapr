@@ -1,5 +1,7 @@
 use super::fetchr_types::{FETCH_MANIFEST_VERSION, FetchManifest, FetchManifestItem, FetchManifestOptions};
-use super::support::{ensure_parent, hash_bytes, is_path_selected, media_type_for, path_to_string, write_fetch_manifest};
+use super::support::{
+	ensure_parent, hash_bytes, is_path_selected, media_type_for, path_to_string, write_fetch_manifest,
+};
 use crate::fetchr::{WebFetchOptions, WebFetchRequest};
 use crate::process::pipeline::{ArtifactItem, ArtifactSet, StageOutput, WorkflowContext};
 use crate::process::{ProcessFailure, ProcessItem, ProcessProgress, ProcessStage, WebContentSource};

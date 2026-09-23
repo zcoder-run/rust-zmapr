@@ -204,10 +204,16 @@ async fn test_process_fetch_binary_file_hashes_and_resumes() -> Result<()> {
 	// -- Check
 	assert_eq!(first_output.completed_items.len(), 1);
 	assert!(first_output.failures.is_empty());
-	let item = first_output.completed_items.first().ok_or("Fetch should complete the binary file")?;
+	let item = first_output
+		.completed_items
+		.first()
+		.ok_or("Fetch should complete the binary file")?;
 	let artifact_path = item.output_path.as_ref().ok_or("Fetch should copy the binary file")?;
 	assert_eq!(fs::read(artifact_path.as_std_path())?, contents);
-	assert_eq!(actual_hash, bs58::encode(blake3::hash(&contents).as_bytes()).into_string());
+	assert_eq!(
+		actual_hash,
+		bs58::encode(blake3::hash(&contents).as_bytes()).into_string()
+	);
 	assert!(second_output.completed_items.is_empty());
 	assert_eq!(second_output.skipped_items.len(), 1);
 	assert!(second_output.failures.is_empty());
