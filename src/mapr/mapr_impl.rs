@@ -1,7 +1,7 @@
 use crate::mapr::{
-	ContentMapDocument, FileMapEntry, JournalHeader, JournalRecord, PROMPT_VERSION, hash_file_bytes,
-	html_to_markdown, init_or_load_journal, is_html_item, is_text_mappable, parse_file_info, publish_content_map,
-	remove_journal, render_file_prompt, select_active_ai_client,
+	ContentMapDocument, FileMapEntry, JournalHeader, JournalRecord, PROMPT_VERSION, hash_file_bytes, html_to_markdown,
+	init_or_load_journal, is_html_item, is_text_mappable, parse_file_info, publish_content_map, remove_journal,
+	render_file_prompt, select_active_ai_client,
 };
 use crate::process::pipeline::{ArtifactItem, ArtifactSet, StageOutput, WorkflowContext};
 use crate::process::{ContentMapOptions, ProcessFailure, ProcessItem, ProcessProgress, ProcessStage};

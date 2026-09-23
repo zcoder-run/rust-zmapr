@@ -87,10 +87,7 @@ pub fn is_html_item(media_type: Option<&str>, path: impl AsRef<Path>) -> bool {
 		}
 	}
 
-	path_ref
-		.extension()
-		.and_then(|ext| ext.to_str())
-		.is_some_and(is_html_extension)
+	path_ref.extension().and_then(|ext| ext.to_str()).is_some_and(is_html_extension)
 }
 
 pub fn html_to_markdown(html: &str) -> Result<String> {
@@ -368,13 +365,7 @@ mod tests {
 			},
 		);
 
-		let document = ContentMapDocument::new(
-			"mock-model",
-			1,
-			"2026-09-20T20:15:16Z",
-			file_map,
-			BTreeMap::new(),
-		);
+		let document = ContentMapDocument::new("mock-model", 1, "2026-09-20T20:15:16Z", file_map, BTreeMap::new());
 
 		// -- Exec
 		publish_content_map(&target_file, &document)?;

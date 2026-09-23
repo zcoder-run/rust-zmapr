@@ -126,11 +126,7 @@ fn normalize_topics(raw_topics: Vec<String>) -> Vec<String> {
 	for topic in raw_topics {
 		let words: Vec<&str> = topic.split_whitespace().collect();
 		if !words.is_empty() && normalized.len() < 7 {
-			let topic_words = if words.len() > 3 {
-				&words[..3]
-			} else {
-				&words[..]
-			};
+			let topic_words = if words.len() > 3 { &words[..3] } else { &words[..] };
 			normalized.push(topic_words.join(" "));
 		}
 	}

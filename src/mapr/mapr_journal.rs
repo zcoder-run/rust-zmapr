@@ -220,11 +220,7 @@ pub fn load_journal(
 // region:    --- Constructors & Inherent Implementations
 
 impl JournalHeader {
-	pub fn new(
-		model: impl Into<String>,
-		prompt_version: u32,
-		artifact_root: impl Into<String>,
-	) -> Self {
+	pub fn new(model: impl Into<String>, prompt_version: u32, artifact_root: impl Into<String>) -> Self {
 		let model = model.into();
 		let artifact_root = artifact_root.into();
 		let fingerprint = compute_journal_fingerprint(&model, prompt_version, &artifact_root);
