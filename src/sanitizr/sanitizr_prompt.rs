@@ -11,7 +11,15 @@ pub(crate) const SANITIZE_INSTRUCTIONS: &str = "Remove navigation, headers, foot
 
 pub(crate) fn render_sanitize_prompt(instructions: &str, relative_path: &str, content: &str) -> String {
 	format!(
-		"{instructions}\n\nFile path: {relative_path}\n\n<SANITIZE_INPUT>\n{content}\n</SANITIZE_INPUT>\n\nReturn only the cleaned content between <SANITIZED_CONTENT> and </SANITIZED_CONTENT> tags."
+"{instructions}
+
+File path: {relative_path}
+
+<SANITIZE_INPUT>
+{content}
+</SANITIZE_INPUT>
+
+Return only the cleaned content between <SANITIZED_CONTENT> and </SANITIZED_CONTENT> tags."
 	)
 }
 
