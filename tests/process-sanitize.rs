@@ -3,9 +3,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use zmapr::{
-	ContentMapDocument, ItemState, ItemStatus, MaprAiClient, MaprAiResponse, MaprAiSelector,
-	ProcessContentOptions, ProcessStage, ProgressEvent, SanitizePrompt, StageStatus, process_content,
-	set_active_ai_selector,
+	ContentMapDocument, ItemState, ItemStatus, MaprAiClient, MaprAiResponse, MaprAiSelector, ProcessContentOptions,
+	ProcessStage, ProgressEvent, SanitizePrompt, StageStatus, process_content, set_active_ai_selector,
 };
 
 type Result<T> = core::result::Result<T, Box<dyn std::error::Error>>;
@@ -21,7 +20,10 @@ async fn test_process_sanitize_cleans_text_and_copies_ineligible_items() -> Resu
 	let root = fixture_root("test_process_sanitize_cleans_text_and_copies_ineligible_items")?;
 	let source_root = root.join("source");
 	fs::create_dir_all(&source_root)?;
-	fs::write(source_root.join("intro.md"), b"# Intro\nKeep the substantive content.\n")?;
+	fs::write(
+		source_root.join("intro.md"),
+		b"# Intro\nKeep the substantive content.\n",
+	)?;
 	fs::write(source_root.join("image.png"), b"image bytes")?;
 	let destination = root.join("destination");
 	let options = ProcessContentOptions::new(path_text(&destination))
@@ -44,7 +46,10 @@ async fn test_process_sanitize_cleans_text_and_copies_ineligible_items() -> Resu
 	let progress_events = progress_task.await?;
 
 	// -- Check
-	assert_eq!(output.stats.sanitize.as_ref().ok_or("expected Sanitize stats")?.failed, 0);
+	assert_eq!(
+		output.stats.sanitize.as_ref().ok_or("expected Sanitize stats")?.failed,
+		0
+	);
 	let stats = query.stats();
 	assert_eq!(stats.sanitize.completed, 1);
 	assert_eq!(stats.sanitize.skipped, 1);
@@ -56,11 +61,7 @@ async fn test_process_sanitize_cleans_text_and_copies_ineligible_items() -> Resu
 	assert!(sanitize_state.usage.is_some());
 	assert_eq!(
 		item.content_path().ok_or("expected sanitized content path")?.as_std_path(),
-		destination
-			.join(".tmp-zmapr")
-			.join("02-sanitize")
-			.join("intro.md")
-			.as_path()
+		destination.join(".tmp-zmapr").join("02-sanitize").join("intro.md").as_path()
 	);
 	let sanitize_root = destination.join(".tmp-zmapr").join("02-sanitize");
 	assert!(sanitize_root.join("intro.md").is_file());
@@ -93,10 +94,7 @@ async fn test_process_sanitize_cleans_text_and_copies_ineligible_items() -> Resu
 		.iter()
 		.find(|item| {
 			item.relative_path == "image.png"
-				&& item
-					.sanitize
-					.as_ref()
-					.is_some_and(|state| state.status == ItemStatus::Skipped)
+				&& item.sanitize.as_ref().is_some_and(|state| state.status == ItemStatus::Skipped)
 		})
 		.ok_or("expected skipped image item")?;
 	let skipped_sanitize = skipped_item.sanitize.as_ref().ok_or("expected Sanitize state")?;
@@ -137,7 +135,10 @@ async fn test_process_sanitize_map_uses_sanitized_artifacts() -> Result<()> {
 	let output = handle.wait_output().await?;
 
 	// -- Check
-	assert_eq!(output.stats.sanitize.as_ref().ok_or("expected Sanitize stats")?.failed, 0);
+	assert_eq!(
+		output.stats.sanitize.as_ref().ok_or("expected Sanitize stats")?.failed,
+		0
+	);
 	assert_eq!(
 		output.content_root.as_std_path(),
 		destination.join(".tmp-zmapr").join("02-sanitize").as_path()
@@ -145,11 +146,7 @@ async fn test_process_sanitize_map_uses_sanitized_artifacts() -> Result<()> {
 	let content_map_path = output.content_map_path.as_ref().ok_or("expected content map")?;
 	let document: ContentMapDocument = serde_json::from_slice(&fs::read(content_map_path.as_std_path())?)?;
 	assert!(document.file_map.contains_key("intro.md"));
-	assert!(destination
-		.join(".tmp-zmapr")
-		.join("02-sanitize")
-		.join("intro.md")
-		.is_file());
+	assert!(destination.join(".tmp-zmapr").join("02-sanitize").join("intro.md").is_file());
 
 	set_active_ai_selector(None);
 	Ok(())
@@ -177,12 +174,11 @@ async fn test_process_sanitize_custom_instructions_replace_built_in_prompt() -> 
 	let output = handle.wait_output().await?;
 
 	// -- Check
-	assert_eq!(output.stats.sanitize.as_ref().ok_or("expected Sanitize stats")?.failed, 0);
-	assert!(destination
-		.join(".tmp-zmapr")
-		.join("02-sanitize")
-		.join("guide.md")
-		.is_file());
+	assert_eq!(
+		output.stats.sanitize.as_ref().ok_or("expected Sanitize stats")?.failed,
+		0
+	);
+	assert!(destination.join(".tmp-zmapr").join("02-sanitize").join("guide.md").is_file());
 
 	set_active_ai_selector(None);
 	Ok(())
@@ -218,7 +214,10 @@ async fn test_process_sanitize_missing_output_tags_records_failure_and_completes
 	let progress_events = progress_task.await?;
 
 	// -- Check
-	assert_eq!(output.stats.sanitize.as_ref().ok_or("expected Sanitize stats")?.failed, 1);
+	assert_eq!(
+		output.stats.sanitize.as_ref().ok_or("expected Sanitize stats")?.failed,
+		1
+	);
 	let failed_item = output
 		.items
 		.iter()
@@ -238,11 +237,7 @@ async fn test_process_sanitize_missing_output_tags_records_failure_and_completes
 			stage: ProcessStage::Sanitize
 		}
 	)));
-	assert!(!destination
-		.join(".tmp-zmapr")
-		.join("02-sanitize")
-		.join("guide.md")
-		.exists());
+	assert!(!destination.join(".tmp-zmapr").join("02-sanitize").join("guide.md").exists());
 
 	set_active_ai_selector(None);
 	Ok(())
@@ -270,23 +265,49 @@ async fn test_process_sanitize_resume_reuses_unchanged_items_and_invalidates_cha
 
 	// -- Check
 	assert_eq!(second_query.stats().sanitize.reused, 2);
-	assert_eq!(first_output.stats.sanitize.as_ref().ok_or("expected Sanitize stats")?.completed, 2);
-	assert_eq!(second_output.stats.sanitize.as_ref().ok_or("expected Sanitize stats")?.completed, 0);
+	assert_eq!(
+		first_output.stats.sanitize.as_ref().ok_or("expected Sanitize stats")?.completed,
+		2
+	);
+	assert_eq!(
+		second_output
+			.stats
+			.sanitize
+			.as_ref()
+			.ok_or("expected Sanitize stats")?
+			.completed,
+		0
+	);
 	assert_eq!(second_output.stats.total_usage, None);
-	assert_eq!(second_output.stats.sanitize.as_ref().ok_or("expected Sanitize stats")?.reused, 2);
+	assert_eq!(
+		second_output.stats.sanitize.as_ref().ok_or("expected Sanitize stats")?.reused,
+		2
+	);
 
 	// -- Exec & Check
 	fs::write(source_root.join("intro.md"), b"# Intro\nUpdated content.")?;
 	let changed_source_handle =
 		process_content(sanitize_options(&destination, &source_root, "stub-model", None)).await?;
 	let changed_source_output = changed_source_handle.wait_output().await?;
-	let completed_sources = relative_paths(&changed_source_output.items, ProcessStage::Sanitize, ItemStatus::Completed);
+	let completed_sources = relative_paths(
+		&changed_source_output.items,
+		ProcessStage::Sanitize,
+		ItemStatus::Completed,
+	);
 	assert_eq!(completed_sources, vec!["intro.md"]);
 
 	let changed_model_handle =
 		process_content(sanitize_options(&destination, &source_root, "stub-model-v2", None)).await?;
 	let changed_model_output = changed_model_handle.wait_output().await?;
-	assert_eq!(changed_model_output.stats.sanitize.as_ref().ok_or("expected Sanitize stats")?.completed, 2);
+	assert_eq!(
+		changed_model_output
+			.stats
+			.sanitize
+			.as_ref()
+			.ok_or("expected Sanitize stats")?
+			.completed,
+		2
+	);
 
 	let custom_prompt = Some(SanitizePrompt::content("CUSTOM RULES"));
 	let changed_prompt_handle = process_content(sanitize_options(
@@ -297,14 +318,17 @@ async fn test_process_sanitize_resume_reuses_unchanged_items_and_invalidates_cha
 	))
 	.await?;
 	let changed_prompt_output = changed_prompt_handle.wait_output().await?;
-	assert_eq!(changed_prompt_output.stats.sanitize.as_ref().ok_or("expected Sanitize stats")?.completed, 2);
+	assert_eq!(
+		changed_prompt_output
+			.stats
+			.sanitize
+			.as_ref()
+			.ok_or("expected Sanitize stats")?
+			.completed,
+		2
+	);
 
-	fs::remove_file(
-		destination
-			.join(".tmp-zmapr")
-			.join("02-sanitize")
-			.join("intro.md"),
-	)?;
+	fs::remove_file(destination.join(".tmp-zmapr").join("02-sanitize").join("intro.md"))?;
 	let missing_output_handle = process_content(sanitize_options(
 		&destination,
 		&source_root,

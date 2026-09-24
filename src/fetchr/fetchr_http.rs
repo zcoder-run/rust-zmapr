@@ -1,7 +1,7 @@
 use super::fetchr_types::{FETCH_MANIFEST_VERSION, FetchManifest, FetchManifestItem, FetchManifestOptions};
 use super::support::{
-	apply_fetch_format, ensure_parent, hash_bytes, is_path_selected, media_type_for, path_to_string,
-	write_fetch_artifact, write_fetch_manifest, FormattedArtifact,
+	FormattedArtifact, apply_fetch_format, ensure_parent, hash_bytes, is_path_selected, media_type_for, path_to_string,
+	write_fetch_artifact, write_fetch_manifest,
 };
 use crate::fetchr::{FetchCommonOptions, WebFetchOptions, WebFetchRequest};
 use crate::process::pipeline::{ArtifactItem, ArtifactSet, StageOutput, WorkflowContext};
@@ -157,9 +157,7 @@ pub(crate) async fn execute_http_fetch(request: &WebFetchRequest, context: &Work
 
 						let artifact_path_str = path_to_string(&artifact_path)?;
 						if let Some(id) = registered.get(fetched.url.as_str()) {
-							context
-								.progress
-								.fetch_completed(*id, &relative_path, artifact_path.clone());
+							context.progress.fetch_completed(*id, &relative_path, artifact_path.clone());
 						}
 						manifest_items.push(FetchManifestItem {
 							source: source_url,
@@ -179,7 +177,6 @@ pub(crate) async fn execute_http_fetch(request: &WebFetchRequest, context: &Work
 							media_type: fetched.media_type.clone(),
 							source_hash: Some(fetched.artifact_hash.clone()),
 						});
-
 					}
 
 					if is_depth_allowed(current_depth + 1, &request.options)
@@ -253,9 +250,7 @@ fn register_http_fetch_url(
 	if let Ok(relative_path) = url_to_relative_path(url, base_folder_url)
 		&& is_path_selected(&relative_path, common)
 	{
-		let ids = context
-			.progress
-			.register_fetch_items(vec![(key.clone(), relative_path)]);
+		let ids = context.progress.register_fetch_items(vec![(key.clone(), relative_path)]);
 		if let Some(id) = ids.first() {
 			registered.insert(key, *id);
 		}
@@ -444,9 +439,7 @@ async fn execute_llms_fetch(
 
 				let artifact_path_str = path_to_string(&artifact_path)?;
 				if let Some(id) = registered.get(fetched.url.as_str()) {
-					context
-						.progress
-						.fetch_completed(*id, &relative_path, artifact_path.clone());
+					context.progress.fetch_completed(*id, &relative_path, artifact_path.clone());
 				}
 				manifest_items.push(FetchManifestItem {
 					source: source_url,
@@ -466,7 +459,6 @@ async fn execute_llms_fetch(
 					media_type: fetched.media_type.clone(),
 					source_hash: Some(fetched.artifact_hash),
 				});
-
 			}
 			Err((url, err_msg)) => {
 				has_failures = true;

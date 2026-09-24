@@ -75,8 +75,7 @@ fn process_content_output(
 		destination: context.destination.clone(),
 		manifest_path: context.manifest.is_file().then(|| context.manifest.clone()),
 		content_root: output.artifacts.root,
-		content_map_path: (options.map && context.content_map.is_file())
-			.then(|| context.content_map.clone()),
+		content_map_path: (options.map && context.content_map.is_file()).then(|| context.content_map.clone()),
 		items,
 		stats,
 	})

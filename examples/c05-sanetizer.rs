@@ -2,6 +2,7 @@ use zmapr::{ItemStatus, ProcessContentOptions, ProcessQuery, ProgressEvent, Prog
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+	// -- Configure processing
 	let options = ProcessContentOptions::new("examples/.out/c05-sanetizer")
 		.with_source("https://docs.rs/genai/0.7.0-beta.23/genai/")
 		.with_sanitize(true)
@@ -9,8 +10,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 		.with_max_depth(1)
 		.with_model("gpt-6-luna");
 
+	// -- Run processing
 	let mut handle = process_content(options).await?;
 
+	// -- Track progress
 	let query = handle.query();
 	let progress_rx = handle.take_progress_rx().ok_or("expected progress receiver")?;
 	let progress_task = tokio::spawn(print_progress(progress_rx, query));
@@ -18,6 +21,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 	let output = handle.wait_output().await?;
 	progress_task.await?;
 
+	// -- Report results
 	println!("\n\nProcessed content into {}", output.content_root);
 	if let Some(map_path) = &output.content_map_path {
 		println!("Generated content map at {map_path}");
@@ -51,10 +55,7 @@ async fn print_progress(mut progress_rx: ProgressRx, query: ProcessQuery) {
 					println!("{stage:?} - {}", item.source);
 				}
 				ItemStatus::Failed => {
-					let message = item
-						.stage(stage)
-						.and_then(|state| state.error.as_deref())
-						.unwrap_or("unknown");
+					let message = item.stage(stage).and_then(|state| state.error.as_deref()).unwrap_or("unknown");
 					println!(" - (FAIL) {} (cause: {message})", item.source);
 				}
 				_ => {}

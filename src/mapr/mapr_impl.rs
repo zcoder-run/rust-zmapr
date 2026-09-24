@@ -1,7 +1,7 @@
 use crate::mapr::{
-	ContentMapDocument, FileMapEntry, FileMapMetadata, JournalHeader, JournalRecord, PROMPT_VERSION,
+	ContentMapDocument, FileMapEntry, FileMapMetadata, JournalHeader, JournalRecord, MapConfig, PROMPT_VERSION,
 	init_or_load_journal, is_text_mappable, parse_file_info, publish_content_map, remove_journal, render_file_prompt,
-	select_active_ai_client, MapConfig,
+	select_active_ai_client,
 };
 use crate::process::pipeline::{ArtifactItem, ArtifactSet, StageOutput, WorkflowContext};
 use crate::process::{ItemId, ProcessStage};
@@ -99,7 +99,13 @@ pub(crate) async fn execute_content_map(
 			continue;
 		}
 
-		pending_items.push((item.clone(), id, item.relative_path.clone(), source_hash, content_str.to_string()));
+		pending_items.push((
+			item.clone(),
+			id,
+			item.relative_path.clone(),
+			source_hash,
+			content_str.to_string(),
+		));
 	}
 
 	let partial_document = ContentMapDocument::new(
@@ -193,21 +199,14 @@ pub(crate) async fn execute_content_map(
 
 	context.progress.stage_completed(ProcessStage::Map);
 
-	Ok(StageOutput {
-		artifacts: input,
-	})
+	Ok(StageOutput { artifacts: input })
 }
 
 // endregion: --- Operations
 
 // region:    --- Support
 
-fn record_preparation_failure(
-	context: &WorkflowContext,
-	item: &ArtifactItem,
-	id: ItemId,
-	message: String,
-) {
+fn record_preparation_failure(context: &WorkflowContext, item: &ArtifactItem, id: ItemId, message: String) {
 	context.progress.item_failed(id, ProcessStage::Map, message);
 }
 

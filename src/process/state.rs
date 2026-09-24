@@ -212,17 +212,13 @@ impl ProcessStateStore {
 		let update = self.apply(|inner| {
 			for (source, relative_path) in entries {
 				let existing_id = if lookup {
-					inner
-						.path_index
-						.get(&relative_path)
-						.copied()
-						.filter(|id| {
-							inner
-								.snapshot
-								.items
-								.get(id.index())
-								.is_some_and(|item| item.stage(stage).is_none())
-						})
+					inner.path_index.get(&relative_path).copied().filter(|id| {
+						inner
+							.snapshot
+							.items
+							.get(id.index())
+							.is_some_and(|item| item.stage(stage).is_none())
+					})
 				} else {
 					None
 				};
@@ -245,11 +241,7 @@ impl ProcessStateStore {
 				};
 
 				*inner.snapshot.items[id.index()].stage_mut(stage) = Some(ItemStageState::pending());
-				*inner
-					.snapshot
-					.stats
-					.stage_mut(stage)
-					.counter_mut(ItemStatus::Pending) += 1;
+				*inner.snapshot.stats.stage_mut(stage).counter_mut(ItemStatus::Pending) += 1;
 				ids.push(id);
 			}
 
@@ -292,11 +284,7 @@ impl ProcessStateStore {
 		Some(self.apply(|inner| {
 			let stage_is_missing = inner.snapshot.items[id.index()].stage(stage).is_none();
 			if stage_is_missing {
-				*inner
-					.snapshot
-					.stats
-					.stage_mut(stage)
-					.counter_mut(ItemStatus::Pending) += 1;
+				*inner.snapshot.stats.stage_mut(stage).counter_mut(ItemStatus::Pending) += 1;
 			}
 
 			let previous_status = {
@@ -400,7 +388,15 @@ mod tests {
 
 		// -- Exec
 		let _ = state.set_item_status(first, ProcessStage::Fetch, ItemStatus::Running, None, None, None, None);
-		let _ = state.set_item_status(first, ProcessStage::Fetch, ItemStatus::Completed, None, None, None, None);
+		let _ = state.set_item_status(
+			first,
+			ProcessStage::Fetch,
+			ItemStatus::Completed,
+			None,
+			None,
+			None,
+			None,
+		);
 		let _ = state.set_item_status(
 			second,
 			ProcessStage::Fetch,
@@ -492,11 +488,7 @@ mod tests {
 			None,
 			None,
 		);
-		let (map_ids, _) = state.register_items(
-			ProcessStage::Map,
-			vec![("a.md".to_owned(), "a.md".to_owned())],
-			true,
-		);
+		let (map_ids, _) = state.register_items(ProcessStage::Map, vec![("a.md".to_owned(), "a.md".to_owned())], true);
 		let map_id = *map_ids.first().ok_or("expected Map item id")?;
 		let _ = state.set_item_status(
 			map_id,
@@ -510,9 +502,15 @@ mod tests {
 
 		// -- Check
 		let stats = state.stats();
-		assert_eq!(stats.sanitize.usage.as_ref().and_then(|value| value.total_tokens), Some(15));
+		assert_eq!(
+			stats.sanitize.usage.as_ref().and_then(|value| value.total_tokens),
+			Some(15)
+		);
 		assert_eq!(stats.map.usage.as_ref().and_then(|value| value.total_tokens), Some(15));
-		assert_eq!(stats.total_usage.as_ref().and_then(|value| value.total_tokens), Some(30));
+		assert_eq!(
+			stats.total_usage.as_ref().and_then(|value| value.total_tokens),
+			Some(30)
+		);
 		Ok(())
 	}
 
@@ -538,7 +536,10 @@ mod tests {
 		assert!(stats.fetch.ended_epoch_us.is_some());
 		assert!(stats.sanitize.ended_epoch_us.is_some());
 		assert!(stats.ended_epoch_us.is_some());
-		assert!(matches!(updates.last().map(|update| &update.event), Some(ProgressEvent::WorkflowFailed { .. })));
+		assert!(matches!(
+			updates.last().map(|update| &update.event),
+			Some(ProgressEvent::WorkflowFailed { .. })
+		));
 		Ok(())
 	}
 
@@ -552,11 +553,7 @@ mod tests {
 
 		// -- Exec
 		let first = state.stage_started(ProcessStage::Fetch);
-		let (_, second) = state.register_items(
-			ProcessStage::Fetch,
-			vec![("a".to_owned(), "a.md".to_owned())],
-			false,
-		);
+		let (_, second) = state.register_items(ProcessStage::Fetch, vec![("a".to_owned(), "a.md".to_owned())], false);
 		let third = state.set_stage_total(ProcessStage::Fetch);
 
 		// -- Check

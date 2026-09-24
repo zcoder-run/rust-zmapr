@@ -1,12 +1,12 @@
 use super::progress::ProcessProgressPublisher;
 use super::source::ContentSource;
 use super::{ProcessContentOptions, ProcessStage};
+use crate::Result;
 use crate::fetchr::{
 	FetchRequest, LocalFetchRequest, WebFetchRequest, execute_http_fetch, execute_local_fetch, load_prior_local_fetch,
 };
 use crate::mapr::MapConfig;
 use crate::sanitizr::{SanitizeConfig, execute_sanitize};
-use crate::Result;
 use simple_fs::SPath;
 
 // region:    --- Types
@@ -64,7 +64,6 @@ impl StageOutput {
 // endregion: --- Types
 
 // region:    --- Processing Stage
-
 
 // endregion: --- Processing Stage
 

@@ -196,9 +196,7 @@ pub(crate) async fn execute_local_fetch(request: &LocalFetchRequest, context: &W
 
 		match item_result {
 			Ok(()) => {
-				context
-					.progress
-					.fetch_completed(id, &relative_path, artifact_path.clone());
+				context.progress.fetch_completed(id, &relative_path, artifact_path.clone());
 				let artifact = ArtifactItem {
 					source: item.source.clone(),
 					relative_path: relative_path.clone(),
@@ -218,13 +216,7 @@ pub(crate) async fn execute_local_fetch(request: &LocalFetchRequest, context: &W
 			Err(error) => {
 				has_failures = true;
 				context.progress.item_failed(id, ProcessStage::Fetch, error);
-				manifest_items.push(manifest_item(
-					&item,
-					&relative_path,
-					media_type,
-					None,
-					artifact_hash,
-				)?);
+				manifest_items.push(manifest_item(&item, &relative_path, media_type, None, artifact_hash)?);
 			}
 		}
 	}
@@ -497,9 +489,7 @@ fn build_reused_stage_output(
 			.map(|item| (item.local_path.as_str().to_owned(), item.relative_path.clone()))
 			.collect(),
 	);
-	context
-		.progress
-		.add_excluded(ProcessStage::Fetch, discovery.excluded);
+	context.progress.add_excluded(ProcessStage::Fetch, discovery.excluded);
 	context.progress.set_stage_total(ProcessStage::Fetch);
 
 	let mut artifacts = Vec::with_capacity(discovery.items.len());
@@ -514,9 +504,7 @@ fn build_reused_stage_output(
 			source_hash: Some(manifest_item.artifact_hash.clone()),
 		};
 
-		context
-			.progress
-			.fetch_reused(id, &relative_path, artifact.local_path.clone());
+		context.progress.fetch_reused(id, &relative_path, artifact.local_path.clone());
 		artifacts.push(artifact);
 	}
 

@@ -1,7 +1,7 @@
-use super::progress::{ProcessCompletionRx, ProgressRx, event_base_error_to_error};
 use super::item::ItemState;
-use super::stats::FinalStats;
+use super::progress::{ProcessCompletionRx, ProgressRx, event_base_error_to_error};
 use super::state::ProcessQuery;
+use super::stats::FinalStats;
 use crate::Result;
 use simple_fs::SPath;
 

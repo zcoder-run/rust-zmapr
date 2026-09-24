@@ -2,13 +2,17 @@ use zmapr::{ItemStatus, ProcessContentOptions, ProgressEvent, process_content};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+	// -- Configure processing
 	let options = ProcessContentOptions::new("examples/.out/c04-mapr")
 		.with_source("https://docs.rs/genai/0.7.0-beta.23/genai/")
 		.with_max_depth(1)
 		.with_map(true)
 		.with_model("gpt-6-luna");
 
+	// -- Run processing
 	let mut handle = process_content(options).await?;
+
+	// -- Track progress
 	let query = handle.query();
 	let mut progress_rx = handle.take_progress_rx().ok_or("expected progress receiver")?;
 	let progress_task = tokio::spawn(async move {
@@ -21,10 +25,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 						println!(" - {}", item.source);
 					}
 					ItemStatus::Failed => {
-						let message = item
-							.stage(stage)
-							.and_then(|state| state.error.as_deref())
-							.unwrap_or("unknown");
+						let message = item.stage(stage).and_then(|state| state.error.as_deref()).unwrap_or("unknown");
 						println!(" - (FAIL) {} (cause: {message})", item.source);
 					}
 					_ => {}
@@ -33,6 +34,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 		}
 	});
 
+	// -- Report results
 	let output = handle.wait_output().await?;
 	progress_task.await?;
 

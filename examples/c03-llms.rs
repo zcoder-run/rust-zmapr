@@ -2,14 +2,17 @@ use zmapr::{FetchFormat, ItemStatus, ProcessContentOptions, ProgressEvent, proce
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+	// -- Configure processing
 	let options = ProcessContentOptions::new("examples/.out/c03-llms")
 		.with_source("https://docs.typesafe.ai/introduction")
 		.with_llms(true) // default anyway
 		.with_max_depth(10);
 
+	// -- Run processing
 	let mut handle = process_content(options).await?;
 	let query = handle.query();
 
+	// -- Track progress
 	if let Some(mut rx) = handle.take_progress_rx() {
 		while let Ok(update) = rx.recv().await {
 			if let ProgressEvent::ItemStatusChanged {
@@ -27,6 +30,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 			}
 		}
 	}
+
+	// -- Report results
 	let output = handle.wait_output().await?;
 
 	println!("Fetched content into {}", output.content_root);

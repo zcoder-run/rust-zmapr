@@ -27,10 +27,7 @@ async fn test_process_fetch_local_file_returns_output_and_progress() -> Result<(
 	assert_eq!(output.stats.fetch.as_ref().ok_or("expected Fetch stats")?.skipped, 0);
 	assert_eq!(output.stats.fetch.as_ref().ok_or("expected Fetch stats")?.failed, 0);
 
-	let item = output
-		.items
-		.first()
-		.ok_or("Fetch output should contain one completed item")?;
+	let item = output.items.first().ok_or("Fetch output should contain one completed item")?;
 	assert_eq!(item.relative_path, "guide.md");
 	assert_eq!(
 		item.fetch.as_ref().map(|state| state.status),
@@ -90,7 +87,8 @@ async fn test_process_fetch_copies_directory_artifacts_and_publishes_manifest() 
 		.items
 		.first()
 		.ok_or("copied Fetch output should contain the first item")?;
-	let first_path = first.fetch
+	let first_path = first
+		.fetch
 		.as_ref()
 		.and_then(|state| state.path.as_ref())
 		.ok_or("copied Fetch item should have an output path")?;
@@ -101,7 +99,8 @@ async fn test_process_fetch_copies_directory_artifacts_and_publishes_manifest() 
 		.items
 		.get(1)
 		.ok_or("copied Fetch output should contain the second item")?;
-	let second_path = second.fetch
+	let second_path = second
+		.fetch
 		.as_ref()
 		.and_then(|state| state.path.as_ref())
 		.ok_or("copied Fetch item should have an output path")?;
@@ -134,10 +133,8 @@ async fn test_process_fetch_local_excluded_count() -> Result<()> {
 	let destination = root.join("destination");
 
 	// -- Exec
-	let handle = process_content(
-		local_fetch_options(&source_root, &destination, false).with_exclude(["excluded.txt"]),
-	)
-	.await?;
+	let handle =
+		process_content(local_fetch_options(&source_root, &destination, false).with_exclude(["excluded.txt"])).await?;
 	let query = handle.query();
 	let _output = handle.wait_output().await?;
 
@@ -163,14 +160,18 @@ async fn test_process_fetch_resume_reuses_and_rebuilds_state() -> Result<()> {
 	let first_output = first_handle.wait_output().await?;
 
 	// -- Check
-	assert_eq!(first_output.stats.fetch.as_ref().ok_or("expected Fetch stats")?.completed, 1);
-	assert_eq!(first_output.stats.fetch.as_ref().ok_or("expected Fetch stats")?.failed, 0);
+	assert_eq!(
+		first_output.stats.fetch.as_ref().ok_or("expected Fetch stats")?.completed,
+		1
+	);
+	assert_eq!(
+		first_output.stats.fetch.as_ref().ok_or("expected Fetch stats")?.failed,
+		0
+	);
 
-	let first_item = first_output
-		.items
-		.first()
-		.ok_or("initial Fetch should contain one item")?;
-	let artifact_path = first_item.fetch
+	let first_item = first_output.items.first().ok_or("initial Fetch should contain one item")?;
+	let artifact_path = first_item
+		.fetch
 		.as_ref()
 		.and_then(|state| state.path.as_ref())
 		.ok_or("initial Fetch item should have an artifact path")?
@@ -188,7 +189,10 @@ async fn test_process_fetch_resume_reuses_and_rebuilds_state() -> Result<()> {
 	let second_handle = process_content(local_fetch_options(&source_path, &destination, true)).await?;
 	let second_query = second_handle.query();
 	let second_output = second_handle.wait_output().await?;
-	assert_eq!(second_output.stats.fetch.as_ref().ok_or("expected Fetch stats")?.reused, 1);
+	assert_eq!(
+		second_output.stats.fetch.as_ref().ok_or("expected Fetch stats")?.reused,
+		1
+	);
 	assert_eq!(fs::read(&manifest_path)?, original_manifest);
 	assert_eq!(second_query.stats().fetch.reused, 1);
 	assert_eq!(second_query.stats().fetch.completed, 0);
@@ -197,14 +201,20 @@ async fn test_process_fetch_resume_reuses_and_rebuilds_state() -> Result<()> {
 
 	let third_handle = process_content(local_fetch_options(&source_path, &destination, true)).await?;
 	let third_output = third_handle.wait_output().await?;
-	assert_eq!(third_output.stats.fetch.as_ref().ok_or("expected Fetch stats")?.completed, 1);
+	assert_eq!(
+		third_output.stats.fetch.as_ref().ok_or("expected Fetch stats")?.completed,
+		1
+	);
 	assert!(artifact_path.is_file());
 
 	fs::write(&source_path, b"changed\n")?;
 
 	let fourth_handle = process_content(local_fetch_options(&source_path, &destination, true)).await?;
 	let fourth_output = fourth_handle.wait_output().await?;
-	assert_eq!(fourth_output.stats.fetch.as_ref().ok_or("expected Fetch stats")?.completed, 1);
+	assert_eq!(
+		fourth_output.stats.fetch.as_ref().ok_or("expected Fetch stats")?.completed,
+		1
+	);
 	let changed_hash = manifest_hash(&manifest_path)?;
 	assert_ne!(original_hash, changed_hash);
 
@@ -221,10 +231,7 @@ async fn test_process_fetch_resume_rebuilds_legacy_cache_layout() -> Result<()> 
 
 	let first_handle = process_content(local_fetch_options(&source_path, &destination, false)).await?;
 	let first_output = first_handle.wait_output().await?;
-	let first_item = first_output
-		.items
-		.first()
-		.ok_or("initial Fetch should contain one item")?;
+	let first_item = first_output.items.first().ok_or("initial Fetch should contain one item")?;
 	let artifact_path = first_item
 		.fetch
 		.as_ref()
@@ -264,7 +271,8 @@ async fn test_process_fetch_resume_rebuilds_legacy_cache_layout() -> Result<()> 
 		.items
 		.first()
 		.ok_or("Fetch should rebuild the artifact in the numbered cache")?;
-	let output_path = item.fetch
+	let output_path = item
+		.fetch
 		.as_ref()
 		.and_then(|state| state.path.as_ref())
 		.ok_or("rebuilt Fetch item should have an output path")?;
@@ -351,12 +359,15 @@ async fn test_process_fetch_binary_file_hashes_and_resumes() -> Result<()> {
 	let second_output = second_handle.wait_output().await?;
 
 	// -- Check
-	assert_eq!(first_output.stats.fetch.as_ref().ok_or("expected Fetch stats")?.completed, 1);
-	assert_eq!(first_output.stats.fetch.as_ref().ok_or("expected Fetch stats")?.failed, 0);
-	let item = first_output
-		.items
-		.first()
-		.ok_or("Fetch should complete the binary file")?;
+	assert_eq!(
+		first_output.stats.fetch.as_ref().ok_or("expected Fetch stats")?.completed,
+		1
+	);
+	assert_eq!(
+		first_output.stats.fetch.as_ref().ok_or("expected Fetch stats")?.failed,
+		0
+	);
+	let item = first_output.items.first().ok_or("Fetch should complete the binary file")?;
 	let artifact_path = item
 		.fetch
 		.as_ref()
@@ -367,8 +378,14 @@ async fn test_process_fetch_binary_file_hashes_and_resumes() -> Result<()> {
 		actual_hash,
 		bs58::encode(blake3::hash(&contents).as_bytes()).into_string()
 	);
-	assert_eq!(second_output.stats.fetch.as_ref().ok_or("expected Fetch stats")?.reused, 1);
-	assert_eq!(second_output.stats.fetch.as_ref().ok_or("expected Fetch stats")?.failed, 0);
+	assert_eq!(
+		second_output.stats.fetch.as_ref().ok_or("expected Fetch stats")?.reused,
+		1
+	);
+	assert_eq!(
+		second_output.stats.fetch.as_ref().ok_or("expected Fetch stats")?.failed,
+		0
+	);
 
 	Ok(())
 }
@@ -893,13 +910,22 @@ async fn test_process_fetch_local_html_formats_and_path_collisions() -> Result<(
 	let slim_output = slim_handle.wait_output().await?;
 
 	// -- Check
-	assert_eq!(markdown_output.stats.fetch.as_ref().ok_or("expected Fetch stats")?.failed, 2);
-	assert!(markdown_output.items.iter().filter_map(|item| item.fetch.as_ref()).all(|state| {
-		state.status != ItemStatus::Failed
-			|| state.error.as_deref().is_some_and(|message| {
-				message.contains("multiple input artifacts resolve to fetch path page.md")
+	assert_eq!(
+		markdown_output.stats.fetch.as_ref().ok_or("expected Fetch stats")?.failed,
+		2
+	);
+	assert!(
+		markdown_output
+			.items
+			.iter()
+			.filter_map(|item| item.fetch.as_ref())
+			.all(|state| {
+				state.status != ItemStatus::Failed
+					|| state.error.as_deref().is_some_and(|message| {
+						message.contains("multiple input artifacts resolve to fetch path page.md")
+					})
 			})
-	}));
+	);
 	assert!(
 		!markdown_destination
 			.join(".tmp-zmapr")
@@ -911,7 +937,10 @@ async fn test_process_fetch_local_html_formats_and_path_collisions() -> Result<(
 	assert_eq!(raw_output.stats.fetch.as_ref().ok_or("expected Fetch stats")?.failed, 0);
 	assert!(raw_destination.join(".tmp-zmapr").join("01-fetch").join("page.html").is_file());
 
-	assert_eq!(slim_output.stats.fetch.as_ref().ok_or("expected Fetch stats")?.failed, 0);
+	assert_eq!(
+		slim_output.stats.fetch.as_ref().ok_or("expected Fetch stats")?.failed,
+		0
+	);
 	let slim_path = slim_destination.join(".tmp-zmapr").join("01-fetch").join("page.html");
 	assert!(slim_path.is_file());
 	assert!(fs::read_to_string(slim_path)?.contains("Page"));

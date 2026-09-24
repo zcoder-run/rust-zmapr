@@ -80,11 +80,12 @@ pub(crate) async fn execute_sanitize(
 			&& contents.len() <= config.max_size
 			&& let Ok(content) = std::str::from_utf8(&contents)
 		{
-			if let Some(output_hash) =
-				reusable_output_hash(context, &item.relative_path, &input_hash, &prior_manifest)
+			if let Some(output_hash) = reusable_output_hash(context, &item.relative_path, &input_hash, &prior_manifest)
 			{
 				let output_path = context.sanitize_output.join(item.relative_path.as_str());
-				context.progress.item_reused(id, ProcessStage::Sanitize, Some(output_path.clone()));
+				context
+					.progress
+					.item_reused(id, ProcessStage::Sanitize, Some(output_path.clone()));
 				manifest_items.push(SanitizeManifestItem {
 					relative_path: item.relative_path.clone(),
 					input_hash,
@@ -92,7 +93,7 @@ pub(crate) async fn execute_sanitize(
 				});
 				artifacts.push(ArtifactItem {
 					source: item.source,
-						relative_path: item.relative_path.clone(),
+					relative_path: item.relative_path.clone(),
 					local_path: output_path,
 					media_type: item.media_type,
 					source_hash: Some(output_hash),
@@ -103,12 +104,7 @@ pub(crate) async fn execute_sanitize(
 		} else {
 			let output_path = context.sanitize_output.join(item.relative_path.as_str());
 			if let Err(error) = write_sanitize_artifact(&output_path, &contents) {
-				record_failure(
-					context,
-					id,
-					item.relative_path,
-					error.to_string(),
-				);
+				record_failure(context, id, item.relative_path, error.to_string());
 				continue;
 			}
 
@@ -118,7 +114,9 @@ pub(crate) async fn execute_sanitize(
 				input_hash,
 				output_hash: output_hash.clone(),
 			});
-			context.progress.item_skipped(id, ProcessStage::Sanitize, Some(output_path.clone()));
+			context
+				.progress
+				.item_skipped(id, ProcessStage::Sanitize, Some(output_path.clone()));
 			artifacts.push(ArtifactItem {
 				source: item.source,
 				relative_path: item.relative_path,
@@ -154,10 +152,7 @@ pub(crate) async fn execute_sanitize(
 			let prompt = render_sanitize_prompt(&instructions, &item.relative_path, &content);
 			let output_path = output_root.join(item.relative_path.as_str());
 			let result: std::result::Result<(Vec<u8>, Option<genai::chat::Usage>), String> = async {
-				let response = ai_client
-					.complete(&prompt)
-					.await
-					.map_err(|error| error.to_string())?;
+				let response = ai_client.complete(&prompt).await.map_err(|error| error.to_string())?;
 				let sanitized_content =
 					parse_sanitized_content(&response.content).map_err(|error| error.to_string())?;
 				let output_bytes = sanitized_content.into_bytes();
@@ -213,10 +208,7 @@ pub(crate) async fn execute_sanitize(
 	};
 	let manifest_json = serde_json::to_string_pretty(&manifest)
 		.map_err(|error| Error::MalformedState(format!("failed to serialize Sanitize manifest: {error}")))?;
-	write_sanitize_artifact(
-		&context.sanitize_manifest,
-		format!("{manifest_json}\n").as_bytes(),
-	)?;
+	write_sanitize_artifact(&context.sanitize_manifest, format!("{manifest_json}\n").as_bytes())?;
 
 	context.progress.stage_completed(ProcessStage::Sanitize);
 
@@ -276,12 +268,7 @@ fn reusable_output_hash(
 	(output_hash == item.output_hash).then_some(output_hash)
 }
 
-fn record_failure(
-	context: &WorkflowContext,
-	id: ItemId,
-	source: String,
-	message: String,
-) {
+fn record_failure(context: &WorkflowContext, id: ItemId, source: String, message: String) {
 	let _ = source;
 	context.progress.item_failed(id, ProcessStage::Sanitize, message);
 }
@@ -299,9 +286,10 @@ fn write_sanitize_artifact(path: &SPath, contents: &[u8]) -> Result<()> {
 		))
 	})?;
 
-	let file_name = target_path.file_name().and_then(|name| name.to_str()).ok_or_else(|| {
-		Error::MalformedState(format!("Sanitize path has no valid file name: {path}"))
-	})?;
+	let file_name = target_path
+		.file_name()
+		.and_then(|name| name.to_str())
+		.ok_or_else(|| Error::MalformedState(format!("Sanitize path has no valid file name: {path}")))?;
 	let temporary_path = parent.join(format!("{file_name}.tmp"));
 
 	std::fs::write(&temporary_path, contents).map_err(|error| {

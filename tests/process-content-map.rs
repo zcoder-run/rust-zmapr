@@ -3,8 +3,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use zmapr::{
-	ContentMapDocument, ItemState, ItemStatus, MaprAiClient, MaprAiSelector, ProcessContentOptions,
-	ProcessStage, ProgressEvent, StageStatus, process_content, set_active_ai_selector,
+	ContentMapDocument, ItemState, ItemStatus, MaprAiClient, MaprAiSelector, ProcessContentOptions, ProcessStage,
+	ProgressEvent, StageStatus, process_content, set_active_ai_selector,
 };
 
 type Result<T> = core::result::Result<T, Box<dyn std::error::Error>>; // For tests.
@@ -76,16 +76,10 @@ async fn test_process_content_map_with_stub_publishes_output_and_content_map() -
 		destination.join(".tmp-zmapr").join("manifest.json").as_path()
 	);
 	let fetch_root = destination.join(".tmp-zmapr").join("01-fetch");
-	assert_eq!(
-		fs::read(fetch_root.join("intro.md"))?,
-		b"# Introduction\nWelcome."
-	);
+	assert_eq!(fs::read(fetch_root.join("intro.md"))?, b"# Introduction\nWelcome.");
 	assert!(fetch_root.join("image.png").is_file());
 	assert_eq!(fs::metadata(fetch_root.join("oversize.txt"))?.len(), 300_000);
-	assert_eq!(
-		fs::read(source_root.join("intro.md"))?,
-		b"# Introduction\nWelcome."
-	);
+	assert_eq!(fs::read(source_root.join("intro.md"))?, b"# Introduction\nWelcome.");
 
 	let mapr_completed_sources = relative_paths(&output.items, ProcessStage::Map, ItemStatus::Completed);
 	assert_eq!(mapr_completed_sources, vec!["code.rs", "intro.md"]);
@@ -110,10 +104,7 @@ async fn test_process_content_map_with_stub_publishes_output_and_content_map() -
 	assert!(document.file_map.contains_key("code.rs"));
 	assert_eq!(document.file_metadata.len(), 4);
 	assert!(!destination.join("content-map.md").exists());
-	let intro_metadata = document
-		.file_metadata
-		.get("intro.md")
-		.ok_or("expected intro.md metadata")?;
+	let intro_metadata = document.file_metadata.get("intro.md").ok_or("expected intro.md metadata")?;
 	assert!(intro_metadata.last_modified_unix_nanos.is_some());
 	assert!(!intro_metadata.source_hash.is_empty());
 	let intro_entry = document.file_map.get("intro.md").ok_or("expected intro.md entry")?;
@@ -141,11 +132,7 @@ async fn test_process_content_map_with_stub_publishes_output_and_content_map() -
 	assert!(journal_file.is_file());
 	assert_eq!(fs::metadata(&journal_file)?.len(), 0);
 
-	let total_usage = output
-		.stats
-		.total_usage
-		.as_ref()
-		.ok_or("expected total_usage on output")?;
+	let total_usage = output.stats.total_usage.as_ref().ok_or("expected total_usage on output")?;
 	let sum_prompt: i32 = mapr_completed_ids
 		.iter()
 		.filter_map(|id| {
@@ -185,7 +172,7 @@ async fn test_process_content_map_with_stub_publishes_output_and_content_map() -
 		matches!(
 			&update.event,
 			ProgressEvent::StageStarted {
-			stage: ProcessStage::Map
+				stage: ProcessStage::Map
 			}
 		)
 	});
@@ -193,7 +180,7 @@ async fn test_process_content_map_with_stub_publishes_output_and_content_map() -
 		matches!(
 			&update.event,
 			ProgressEvent::StageCompleted {
-			stage: ProcessStage::Map
+				stage: ProcessStage::Map
 			}
 		)
 	});
@@ -237,11 +224,7 @@ async fn test_process_content_map_journal_reuse_on_second_run() -> Result<()> {
 	assert!(journal_file.is_file());
 	assert!(fs::metadata(&journal_file)?.len() > 0);
 	let journal_content = fs::read_to_string(&journal_file)?;
-	assert!(
-		journal_content
-			.lines()
-			.any(|line| line.contains(r#""path":"intro.md""#))
-	);
+	assert!(journal_content.lines().any(|line| line.contains(r#""path":"intro.md""#)));
 
 	let first_mapr_completed = first_output.stats.map.as_ref().ok_or("expected Map stats")?.completed;
 	assert_eq!(first_mapr_completed, 1);
@@ -262,10 +245,7 @@ async fn test_process_content_map_journal_reuse_on_second_run() -> Result<()> {
 	let second_mapr_reused = relative_paths(&second_output.items, ProcessStage::Map, ItemStatus::Reused);
 	assert_eq!(second_mapr_reused, vec!["intro.md"]);
 	assert_eq!(fs::read(&fetch_copy)?, b"# Intro\nReused content.");
-	assert_eq!(
-		fs::read(source_root.join("intro.md"))?,
-		b"# Intro\nReused content."
-	);
+	assert_eq!(fs::read(source_root.join("intro.md"))?, b"# Intro\nReused content.");
 
 	let content_map_path = second_output.content_map_path.as_ref().ok_or("expected content_map_path")?;
 	let content_str = fs::read_to_string(content_map_path.as_std_path())?;
@@ -321,18 +301,11 @@ async fn test_process_content_map_copies_html_as_markdown() -> Result<()> {
 	let content_map_path = output.content_map_path.as_ref().ok_or("expected content_map_path")?;
 	let document: ContentMapDocument = serde_json::from_slice(&fs::read(content_map_path.as_std_path())?)?;
 	assert!(document.file_map.contains_key("index.md"));
-	let metadata = document
-		.file_metadata
-		.get("index.md")
-		.ok_or("expected HTML input metadata")?;
+	let metadata = document.file_metadata.get("index.md").ok_or("expected HTML input metadata")?;
 	assert!(!metadata.source_hash.is_empty());
 	let journal_file = destination.join(".tmp-zmapr").join("content-map.journal.jsonl");
 	let journal_content = fs::read_to_string(journal_file)?;
-	assert!(
-		journal_content
-			.lines()
-			.any(|line| line.contains(r#""path":"index.md""#))
-	);
+	assert!(journal_content.lines().any(|line| line.contains(r#""path":"index.md""#)));
 
 	set_active_ai_selector(None);
 	Ok(())
@@ -352,9 +325,9 @@ async fn test_process_content_map_publishes_recovered_entries_before_ai_work() -
 
 	let run_options = || {
 		ProcessContentOptions::new(path_text(&destination))
-		.with_source(path_text(&source_root))
-		.with_map(true)
-		.with_model("stub-model")
+			.with_source(path_text(&source_root))
+			.with_map(true)
+			.with_model("stub-model")
 			.with_resume(true)
 	};
 
@@ -363,7 +336,13 @@ async fn test_process_content_map_publishes_recovered_entries_before_ai_work() -
 	let _first_output = first_handle.wait_output().await?;
 
 	fs::write(source_root.join("new.md"), "# New\nRequires AI work.")?;
-	let empty_document = ContentMapDocument::new("stub-model", 2, "2026-09-23T00:00:00Z", Default::default(), Default::default());
+	let empty_document = ContentMapDocument::new(
+		"stub-model",
+		2,
+		"2026-09-23T00:00:00Z",
+		Default::default(),
+		Default::default(),
+	);
 	fs::write(
 		destination.join("content-map.json"),
 		serde_json::to_vec(&empty_document)?,
@@ -378,10 +357,7 @@ async fn test_process_content_map_publishes_recovered_entries_before_ai_work() -
 	let second_output = second_handle.wait_output().await?;
 
 	// -- Check
-	assert_eq!(
-		second_output.stats.map.as_ref().ok_or("expected Map stats")?.failed,
-		0
-	);
+	assert_eq!(second_output.stats.map.as_ref().ok_or("expected Map stats")?.failed, 0);
 	let content_map_path = second_output.content_map_path.as_ref().ok_or("expected content_map_path")?;
 	let document: ContentMapDocument = serde_json::from_slice(&fs::read(content_map_path.as_std_path())?)?;
 	assert!(document.file_map.contains_key("intro.md"));
@@ -595,11 +571,7 @@ async fn test_process_content_map_exact_usage_and_journal_emptied() -> Result<()
 		assert_eq!(usage.total_tokens, Some(150));
 	}
 
-	let total_usage = output
-		.stats
-		.total_usage
-		.as_ref()
-		.ok_or("expected aggregate total_usage")?;
+	let total_usage = output.stats.total_usage.as_ref().ok_or("expected aggregate total_usage")?;
 	assert_eq!(total_usage.prompt_tokens, Some(200));
 	assert_eq!(total_usage.completion_tokens, Some(100));
 	assert_eq!(total_usage.total_tokens, Some(300));
@@ -623,15 +595,19 @@ impl MaprAiClient for PartialMapCheckingAiClient {
 	fn complete<'a>(&'a self, _prompt: &'a str) -> zmapr::BoxFuture<'a, zmapr::Result<zmapr::MaprAiResponse>> {
 		let content_map_path = self.content_map_path.clone();
 		Box::pin(async move {
-			let content = fs::read_to_string(content_map_path)
-				.map_err(|error| zmapr::Error::custom(error.to_string()))?;
-			let document: ContentMapDocument = serde_json::from_str(&content)
-				.map_err(|error| zmapr::Error::custom(error.to_string()))?;
+			let content =
+				fs::read_to_string(content_map_path).map_err(|error| zmapr::Error::custom(error.to_string()))?;
+			let document: ContentMapDocument =
+				serde_json::from_str(&content).map_err(|error| zmapr::Error::custom(error.to_string()))?;
 			if !document.file_map.contains_key("intro.md") {
-				return Err(zmapr::Error::custom("journal entry was not published before AI processing"));
+				return Err(zmapr::Error::custom(
+					"journal entry was not published before AI processing",
+				));
 			}
 			let Some(metadata) = document.file_metadata.get("intro.md") else {
-				return Err(zmapr::Error::custom("journal metadata was not published before AI processing"));
+				return Err(zmapr::Error::custom(
+					"journal metadata was not published before AI processing",
+				));
 			};
 			if metadata.source_hash.is_empty() {
 				return Err(zmapr::Error::custom("journal metadata is incomplete"));

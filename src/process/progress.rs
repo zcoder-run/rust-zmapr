@@ -1,7 +1,7 @@
 use super::item::{ItemId, ItemStatus};
 use super::response::{ProcessContentOutput, ProcessStage};
-use super::stats::{FinalStats, ProgressStats};
 use super::state::ProcessStateStore;
+use super::stats::{FinalStats, ProgressStats};
 use crate::event_base::{EventBaseError, MpscRx, MpscTx, OnceRx, OnceTx, new_mpsc_bounded_default, new_once};
 use crate::{Error, Result};
 use simple_fs::SPath;
@@ -12,15 +12,37 @@ use std::sync::Arc;
 
 #[derive(Debug, Clone)]
 pub enum ProgressEvent {
-	StageStarted { stage: ProcessStage },
-	StageCompleted { stage: ProcessStage },
-	StageFailed { stage: ProcessStage, message: String },
-	ItemsRegistered { stage: ProcessStage, count: usize },
-	ItemsExcluded { stage: ProcessStage, count: usize },
-	StageTotalKnown { stage: ProcessStage, total_items: usize },
-	ItemStatusChanged { id: ItemId, stage: ProcessStage, status: ItemStatus },
+	StageStarted {
+		stage: ProcessStage,
+	},
+	StageCompleted {
+		stage: ProcessStage,
+	},
+	StageFailed {
+		stage: ProcessStage,
+		message: String,
+	},
+	ItemsRegistered {
+		stage: ProcessStage,
+		count: usize,
+	},
+	ItemsExcluded {
+		stage: ProcessStage,
+		count: usize,
+	},
+	StageTotalKnown {
+		stage: ProcessStage,
+		total_items: usize,
+	},
+	ItemStatusChanged {
+		id: ItemId,
+		stage: ProcessStage,
+		status: ItemStatus,
+	},
 	WorkflowCompleted,
-	WorkflowFailed { message: String },
+	WorkflowFailed {
+		message: String,
+	},
 }
 
 #[derive(Debug, Clone)]
@@ -51,8 +73,7 @@ pub(crate) struct ProcessProgressPublisher {
 // region:    --- Factories
 
 pub(crate) fn new_progress_channel() -> Result<(ProcessProgressTx, ProgressRx)> {
-	let (tx, rx) =
-		new_mpsc_bounded_default::<ProgressUpdate>("process-progress").map_err(event_base_error_to_error)?;
+	let (tx, rx) = new_mpsc_bounded_default::<ProgressUpdate>("process-progress").map_err(event_base_error_to_error)?;
 
 	Ok((tx, ProgressRx::new(rx)))
 }
@@ -110,11 +131,7 @@ impl ProcessProgressPublisher {
 		ids
 	}
 
-	pub(crate) fn register_stage_items(
-		&self,
-		stage: ProcessStage,
-		entries: Vec<(String, String)>,
-	) -> Vec<ItemId> {
+	pub(crate) fn register_stage_items(&self, stage: ProcessStage, entries: Vec<(String, String)>) -> Vec<ItemId> {
 		let (ids, update) = self.state.register_items(stage, entries, true);
 		self.send_update(update);
 		ids
@@ -134,7 +151,8 @@ impl ProcessProgressPublisher {
 	pub(crate) fn item_running(&self, id: ItemId, stage: ProcessStage) {
 		if let Some(update) = self
 			.state
-			.set_item_status(id, stage, ItemStatus::Running, None, None, None, None) {
+			.set_item_status(id, stage, ItemStatus::Running, None, None, None, None)
+		{
 			self.send_update(update);
 		}
 	}
@@ -148,7 +166,8 @@ impl ProcessProgressPublisher {
 	) {
 		if let Some(update) = self
 			.state
-			.set_item_status(id, stage, ItemStatus::Completed, path, usage, None, None) {
+			.set_item_status(id, stage, ItemStatus::Completed, path, usage, None, None)
+		{
 			self.send_update(update);
 		}
 	}
@@ -156,7 +175,8 @@ impl ProcessProgressPublisher {
 	pub(crate) fn item_reused(&self, id: ItemId, stage: ProcessStage, path: Option<SPath>) {
 		if let Some(update) = self
 			.state
-			.set_item_status(id, stage, ItemStatus::Reused, path, None, None, None) {
+			.set_item_status(id, stage, ItemStatus::Reused, path, None, None, None)
+		{
 			self.send_update(update);
 		}
 	}
@@ -164,21 +184,17 @@ impl ProcessProgressPublisher {
 	pub(crate) fn item_skipped(&self, id: ItemId, stage: ProcessStage, path: Option<SPath>) {
 		if let Some(update) = self
 			.state
-			.set_item_status(id, stage, ItemStatus::Skipped, path, None, None, None) {
+			.set_item_status(id, stage, ItemStatus::Skipped, path, None, None, None)
+		{
 			self.send_update(update);
 		}
 	}
 
 	pub(crate) fn item_failed(&self, id: ItemId, stage: ProcessStage, message: impl Into<String>) {
-		if let Some(update) = self.state.set_item_status(
-			id,
-			stage,
-			ItemStatus::Failed,
-			None,
-			None,
-			Some(message.into()),
-			None,
-		) {
+		if let Some(update) =
+			self.state
+				.set_item_status(id, stage, ItemStatus::Failed, None, None, Some(message.into()), None)
+		{
 			self.send_update(update);
 		}
 	}
