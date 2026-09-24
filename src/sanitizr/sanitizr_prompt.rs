@@ -20,7 +20,17 @@ File path: {relative_path}
 {content}
 </SANITIZE_INPUT>
 
-Return only the cleaned content between <SANITIZED_CONTENT> and </SANITIZED_CONTENT> tags."
+Response format (required):
+- Your entire response must contain the cleaned document enclosed by the exact, case-sensitive tags `<SANITIZED_CONTENT>` and `</SANITIZED_CONTENT>`.
+- Always include both tags, even if the cleaned document is empty. Do not rename, omit, or alter them.
+- Put only the cleaned document between the tags. Do not include explanations, markdown fences, or any other text outside the tags.
+- Do not return the `<SANITIZE_INPUT>` wrapper.
+
+Return the response in this form, replacing the placeholder with the cleaned document:
+<SANITIZED_CONTENT>
+[cleaned document]
+</SANITIZED_CONTENT>
+"
 	)
 }
 
@@ -60,17 +70,11 @@ pub(crate) fn resolve_instructions(prompt: Option<&SanitizePrompt>) -> Result<St
 // region:    --- Support
 
 fn strip_one_newline(value: &str) -> &str {
-	value
-		.strip_prefix("\r\n")
-		.or_else(|| value.strip_prefix('\n'))
-		.unwrap_or(value)
+	value.strip_prefix("\r\n").or_else(|| value.strip_prefix('\n')).unwrap_or(value)
 }
 
 fn strip_one_trailing_newline(value: &str) -> &str {
-	value
-		.strip_suffix("\r\n")
-		.or_else(|| value.strip_suffix('\n'))
-		.unwrap_or(value)
+	value.strip_suffix("\r\n").or_else(|| value.strip_suffix('\n')).unwrap_or(value)
 }
 
 // endregion: --- Support
@@ -84,12 +88,33 @@ mod tests {
 	use super::*;
 
 	#[test]
+	fn test_sanitizr_sanitizr_prompt_render_sanitize_prompt_requires_output_tags() -> Result<()> {
+		// -- Setup & Fixtures
+		let instructions = "Remove boilerplate.";
+		let relative_path = "guide.md";
+		let content = "# Guide";
+
+		// -- Exec
+		let prompt = render_sanitize_prompt(instructions, relative_path, content);
+
+		// -- Check
+		assert!(prompt.contains("exact, case-sensitive tags `<SANITIZED_CONTENT>` and `</SANITIZED_CONTENT>`"));
+		assert!(prompt.contains("Always include both tags"));
+		assert!(prompt.contains("Do not include explanations, markdown fences, or any other text outside the tags"));
+		assert!(prompt.contains("Do not return the `<SANITIZE_INPUT>` wrapper"));
+
+		Ok(())
+	}
+
+	#[test]
 	fn test_sanitizr_sanitizr_prompt_parse_sanitized_content_missing_start_tag() -> Result<()> {
 		// -- Setup & Fixtures
 		let response = "</SANITIZED_CONTENT>";
 
 		// -- Exec
-		let error = parse_sanitized_content(response).err().ok_or("expected missing opening tag error")?;
+		let error = parse_sanitized_content(response)
+			.err()
+			.ok_or("expected missing opening tag error")?;
 
 		// -- Check
 		assert!(matches!(&error, Error::MissingTag(_)));
@@ -104,7 +129,9 @@ mod tests {
 		let response = "<SANITIZED_CONTENT>content";
 
 		// -- Exec
-		let error = parse_sanitized_content(response).err().ok_or("expected missing closing tag error")?;
+		let error = parse_sanitized_content(response)
+			.err()
+			.ok_or("expected missing closing tag error")?;
 
 		// -- Check
 		assert!(matches!(&error, Error::MissingTag(_)));
