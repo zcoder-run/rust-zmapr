@@ -1,4 +1,4 @@
-use zmapr::{ProcessContentOptions, ProcessProgress, process_content};
+use zmapr::{ItemStatus, ProcessContentOptions, ProgressEvent, process_content};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -9,17 +9,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 		.with_model("gpt-6-luna");
 
 	let mut handle = process_content(options).await?;
+	let query = handle.query();
 	let mut progress_rx = handle.take_progress_rx().ok_or("expected progress receiver")?;
 	let progress_task = tokio::spawn(async move {
-		while let Ok(event) = progress_rx.recv().await {
-			match event {
-				ProcessProgress::ItemCompleted { item } | ProcessProgress::ItemSkipped { item } => {
-					println!(" - {}", item.source);
+		while let Ok(update) = progress_rx.recv().await {
+			if let ProgressEvent::ItemStatusChanged { id, stage, status } = update.event
+				&& let Some(item) = query.item(id)
+			{
+				match status {
+					ItemStatus::Completed | ItemStatus::Reused | ItemStatus::Skipped => {
+						println!(" - {}", item.source);
+					}
+					ItemStatus::Failed => {
+						let message = item
+							.stage(stage)
+							.and_then(|state| state.error.as_deref())
+							.unwrap_or("unknown");
+						println!(" - (FAIL) {} (cause: {message})", item.source);
+					}
+					_ => {}
 				}
-				ProcessProgress::ItemFailed { failure } => {
-					println!(" - (FAIL_ {}", failure.item.source);
-				}
-				_ => {}
 			}
 		}
 	});
@@ -31,10 +40,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 	if let Some(map_path) = output.content_map_path {
 		println!("Generated content map at {map_path}");
 	}
-	println!("Completed items: {}", output.completed_items.len());
+	let completed_items = output.stats.fetch.as_ref().map_or(0, |stats| stats.completed)
+		+ output.stats.sanitize.as_ref().map_or(0, |stats| stats.completed)
+		+ output.stats.map.as_ref().map_or(0, |stats| stats.completed);
+	println!("Completed items: {completed_items}");
 
 	println!();
-	if let Some(usage) = &output.total_usage {
+	if let Some(usage) = &output.stats.total_usage {
 		let input_tokens = usage.prompt_tokens.unwrap_or(0);
 		let output_tokens = usage.completion_tokens.unwrap_or(0);
 		let total_tokens = usage.total_tokens.unwrap_or(input_tokens + output_tokens);

@@ -1,3 +1,11 @@
+// region:    --- Modules
+
+mod time;
+
+pub(crate) use time::*;
+
+// endregion: --- Modules
+
 use crate::{Error, Result};
 use htmlr::{SlimOptions, slim, to_md};
 use std::path::Path;

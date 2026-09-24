@@ -1,7 +1,6 @@
-use super::progress::{ProcessProgress, ProcessProgressPublisher};
-use super::response::compute_total_usage;
+use super::progress::ProcessProgressPublisher;
 use super::source::ContentSource;
-use super::{ProcessContentOptions, ProcessFailure, ProcessItem, ProcessStage};
+use super::{ProcessContentOptions, ProcessStage};
 use crate::fetchr::{
 	FetchRequest, LocalFetchRequest, WebFetchRequest, execute_http_fetch, execute_local_fetch, load_prior_local_fetch,
 };
@@ -45,9 +44,6 @@ pub(crate) struct ArtifactItem {
 #[derive(Debug, Clone)]
 pub(crate) struct StageOutput {
 	pub(crate) artifacts: ArtifactSet,
-	pub(crate) completed_items: Vec<ProcessItem>,
-	pub(crate) skipped_items: Vec<ProcessItem>,
-	pub(crate) failures: Vec<ProcessFailure>,
 }
 
 impl ArtifactSet {
@@ -61,16 +57,7 @@ impl ArtifactSet {
 
 impl StageOutput {
 	fn passthrough(artifacts: ArtifactSet) -> Self {
-		Self {
-			artifacts,
-			completed_items: Vec::new(),
-			skipped_items: Vec::new(),
-			failures: Vec::new(),
-		}
-	}
-
-	pub(crate) fn total_usage(&self) -> Option<genai::chat::Usage> {
-		compute_total_usage(&self.completed_items)
+		Self { artifacts }
 	}
 }
 
@@ -127,9 +114,6 @@ pub(crate) async fn run_pipeline(
 			max_size: 200_000,
 		};
 		let sanitize_output = execute_sanitize(context, output.artifacts, &sanitize_config).await?;
-		output.completed_items.extend(sanitize_output.completed_items);
-		output.skipped_items.extend(sanitize_output.skipped_items);
-		output.failures.extend(sanitize_output.failures);
 		output.artifacts = sanitize_output.artifacts;
 	}
 
@@ -141,9 +125,6 @@ pub(crate) async fn run_pipeline(
 			retain_journal: true,
 		};
 		let map_output = crate::mapr::execute_content_map(context, output.artifacts, &map_config).await?;
-		output.completed_items.extend(map_output.completed_items);
-		output.skipped_items.extend(map_output.skipped_items);
-		output.failures.extend(map_output.failures);
 		output.artifacts = map_output.artifacts;
 	}
 
@@ -151,18 +132,14 @@ pub(crate) async fn run_pipeline(
 }
 
 async fn execute_fetch_stage(context: &WorkflowContext, request: &FetchRequest) -> Result<StageOutput> {
-	context.progress.publish(ProcessProgress::StageStarted {
-		stage: ProcessStage::Fetch,
-	});
+	context.progress.stage_started(ProcessStage::Fetch);
 	let result = match request {
 		FetchRequest::Local(local_request) => execute_local_fetch(local_request, context).await,
 		FetchRequest::Web(web_request) => execute_http_fetch(web_request, context).await,
 	};
 
 	if result.is_ok() {
-		context.progress.publish(ProcessProgress::StageCompleted {
-			stage: ProcessStage::Fetch,
-		});
+		context.progress.stage_completed(ProcessStage::Fetch);
 	}
 
 	result

@@ -3,14 +3,14 @@ use super::support::{
 	apply_fetch_format, ensure_parent, hash_bytes, is_path_selected, media_type_for, path_to_string,
 	write_fetch_artifact, write_fetch_manifest, FormattedArtifact,
 };
-use crate::fetchr::{WebFetchOptions, WebFetchRequest};
+use crate::fetchr::{FetchCommonOptions, WebFetchOptions, WebFetchRequest};
 use crate::process::pipeline::{ArtifactItem, ArtifactSet, StageOutput, WorkflowContext};
-use crate::process::{FetchFormat, ProcessFailure, ProcessItem, ProcessProgress, ProcessStage, WebContentSource};
+use crate::process::{FetchFormat, ItemId, ProcessStage, WebContentSource};
 use crate::webc::{WebClient, new_client};
 use crate::{Error, Result};
 use reqwest::Url;
 use simple_fs::{SPath, ensure_dir};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::Arc;
 use tokio::sync::Semaphore;
@@ -58,14 +58,14 @@ pub(crate) async fn execute_http_fetch(request: &WebFetchRequest, context: &Work
 
 	let mut visited = HashSet::new();
 	visited.insert(start_url.as_str().to_owned());
+	let mut registered = HashMap::new();
+	register_http_fetch_url(&start_url, &base_folder_url, &request.common, context, &mut registered);
 
 	let mut current_level = vec![start_url];
 	let mut current_depth = 0;
 
 	let mut artifacts = Vec::new();
-	let mut completed_items = Vec::new();
-	let mut skipped_items = Vec::new();
-	let mut failures = Vec::new();
+	let mut has_failures = false;
 	let mut manifest_items = Vec::new();
 	let mut stored_paths = HashSet::new();
 
@@ -81,10 +81,13 @@ pub(crate) async fn execute_http_fetch(request: &WebFetchRequest, context: &Work
 			let client = client.clone();
 			let base_folder = base_folder_url.clone();
 
-				let format = request.common.format;
-				let task = tokio::spawn(async move {
+			if let Some(id) = registered.get(url.as_str()) {
+				context.progress.item_running(*id, ProcessStage::Fetch);
+			}
+			let format = request.common.format;
+			let task = tokio::spawn(async move {
 				let _permit = permit;
-					fetch_single_url(&client, &url, &base_folder, format).await
+				fetch_single_url(&client, &url, &base_folder, format).await
 			});
 			tasks.push(task);
 		}
@@ -105,16 +108,12 @@ pub(crate) async fn execute_http_fetch(request: &WebFetchRequest, context: &Work
 					if is_path_selected(&origin_relative_path, &request.common)
 						&& !stored_paths.insert(relative_path.clone())
 					{
+						let message = format!("multiple input artifacts resolve to fetch path {relative_path}");
 						let artifact_path = artifact_root.join(&relative_path);
-						let failure = ProcessFailure {
-							item: ProcessItem {
-								source: relative_path.clone(),
-								output_path: None,
-								stage: ProcessStage::Fetch,
-								usage: None,
-							},
-							message: format!("multiple input artifacts resolve to fetch path {relative_path}"),
-						};
+						has_failures = true;
+						if let Some(id) = registered.get(fetched.url.as_str()) {
+							context.progress.item_failed(*id, ProcessStage::Fetch, message);
+						}
 						manifest_items.push(FetchManifestItem {
 							source: source_url,
 							relative_path: relative_path.clone(),
@@ -125,35 +124,23 @@ pub(crate) async fn execute_http_fetch(request: &WebFetchRequest, context: &Work
 							content_hash: fetched.content_hash.clone(),
 							artifact_hash: fetched.artifact_hash.clone(),
 						});
-						failures.push(failure.clone());
-						context.progress.publish(ProcessProgress::ItemFailed { failure });
 					} else if is_path_selected(&origin_relative_path, &request.common) {
 						let artifact_path = artifact_root.join(&relative_path);
 						if let Err(err) = ensure_parent(&artifact_path) {
-							let failure = ProcessFailure {
-								item: ProcessItem {
-									source: relative_path.clone(),
-									output_path: None,
-									stage: ProcessStage::Fetch,
-									usage: None,
-								},
-								message: err.to_string(),
-							};
-							failures.push(failure.clone());
-							context.progress.publish(ProcessProgress::ItemFailed { failure });
+							let message = err.to_string();
+							has_failures = true;
+							if let Some(id) = registered.get(fetched.url.as_str()) {
+								context.progress.item_failed(*id, ProcessStage::Fetch, message);
+							}
 							continue;
 						}
 
 						if let Err(err) = write_fetch_artifact(&artifact_path, &fetched.body) {
-							let failure = ProcessFailure {
-								item: ProcessItem {
-									source: relative_path.clone(),
-									output_path: None,
-									stage: ProcessStage::Fetch,
-									usage: None,
-								},
-								message: err.to_string(),
-							};
+							let message = err.to_string();
+							has_failures = true;
+							if let Some(id) = registered.get(fetched.url.as_str()) {
+								context.progress.item_failed(*id, ProcessStage::Fetch, message);
+							}
 							let artifact_path_str = path_to_string(&artifact_path).ok();
 							manifest_items.push(FetchManifestItem {
 								source: source_url,
@@ -165,19 +152,15 @@ pub(crate) async fn execute_http_fetch(request: &WebFetchRequest, context: &Work
 								content_hash: fetched.content_hash.clone(),
 								artifact_hash: fetched.artifact_hash.clone(),
 							});
-							failures.push(failure.clone());
-							context.progress.publish(ProcessProgress::ItemFailed { failure });
 							continue;
 						}
 
 						let artifact_path_str = path_to_string(&artifact_path)?;
-						let process_item = ProcessItem {
-							source: relative_path.clone(),
-							output_path: Some(artifact_path.clone()),
-							stage: ProcessStage::Fetch,
-							usage: None,
-						};
-
+						if let Some(id) = registered.get(fetched.url.as_str()) {
+							context
+								.progress
+								.fetch_completed(*id, &relative_path, artifact_path.clone());
+						}
 						manifest_items.push(FetchManifestItem {
 							source: source_url,
 							relative_path: relative_path.clone(),
@@ -197,17 +180,6 @@ pub(crate) async fn execute_http_fetch(request: &WebFetchRequest, context: &Work
 							source_hash: Some(fetched.artifact_hash.clone()),
 						});
 
-						completed_items.push(process_item.clone());
-						context.progress.publish(ProcessProgress::ItemCompleted { item: process_item });
-					} else {
-						let process_item = ProcessItem {
-							source: relative_path.clone(),
-							output_path: None,
-							stage: ProcessStage::Fetch,
-							usage: None,
-						};
-						skipped_items.push(process_item.clone());
-						context.progress.publish(ProcessProgress::ItemSkipped { item: process_item });
 					}
 
 					if is_depth_allowed(current_depth + 1, &request.options)
@@ -222,26 +194,23 @@ pub(crate) async fn execute_http_fetch(request: &WebFetchRequest, context: &Work
 							if is_url_in_scope(&link, &base_folder_url, &request.options)
 								&& visited.insert(link.as_str().to_owned())
 							{
+								register_http_fetch_url(
+									&link,
+									&base_folder_url,
+									&request.common,
+									context,
+									&mut registered,
+								);
 								next_level.push(link);
 							}
 						}
 					}
 				}
 				Err((url, err_msg)) => {
-					let relative =
-						url_to_relative_path(&url, &base_folder_url).unwrap_or_else(|_| url.as_str().to_owned());
-					let failed_item = ProcessItem {
-						source: relative,
-						output_path: None,
-						stage: ProcessStage::Fetch,
-						usage: None,
-					};
-					let failure = ProcessFailure {
-						item: failed_item,
-						message: err_msg,
-					};
-					failures.push(failure.clone());
-					context.progress.publish(ProcessProgress::ItemFailed { failure });
+					has_failures = true;
+					if let Some(id) = registered.get(url.as_str()) {
+						context.progress.item_failed(*id, ProcessStage::Fetch, err_msg);
+					}
 				}
 			}
 		}
@@ -250,14 +219,13 @@ pub(crate) async fn execute_http_fetch(request: &WebFetchRequest, context: &Work
 		current_level = next_level;
 	}
 
+	context.progress.set_stage_total(ProcessStage::Fetch);
 	artifacts.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
-	completed_items.sort_by(|left, right| left.source.cmp(&right.source));
-	skipped_items.sort_by(|left, right| left.source.cmp(&right.source));
 	manifest_items.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
 
 	let manifest = FetchManifest {
 		version: FETCH_MANIFEST_VERSION,
-		complete: failures.is_empty(),
+		complete: !has_failures,
 		source: request.source.url.clone(),
 		source_path: request.source.url.clone(),
 		options: FetchManifestOptions::from(request),
@@ -271,10 +239,29 @@ pub(crate) async fn execute_http_fetch(request: &WebFetchRequest, context: &Work
 			root: artifact_root,
 			items: artifacts,
 		},
-		completed_items,
-		skipped_items,
-		failures,
 	})
+}
+
+fn register_http_fetch_url(
+	url: &Url,
+	base_folder_url: &Url,
+	common: &FetchCommonOptions,
+	context: &WorkflowContext,
+	registered: &mut HashMap<String, ItemId>,
+) {
+	let key = url.as_str().to_owned();
+	if let Ok(relative_path) = url_to_relative_path(url, base_folder_url)
+		&& is_path_selected(&relative_path, common)
+	{
+		let ids = context
+			.progress
+			.register_fetch_items(vec![(key.clone(), relative_path)]);
+		if let Some(id) = ids.first() {
+			registered.insert(key, *id);
+		}
+	} else {
+		context.progress.add_excluded(ProcessStage::Fetch, 1);
+	}
 }
 
 async fn execute_llms_fetch(
@@ -287,9 +274,7 @@ async fn execute_llms_fetch(
 	probe: LlmsProbeResult,
 ) -> Result<StageOutput> {
 	let mut artifacts = Vec::new();
-	let mut completed_items = Vec::new();
-	let mut skipped_items = Vec::new();
-	let mut failures = Vec::new();
+	let mut has_failures = false;
 	let mut manifest_items = Vec::new();
 
 	let origin_llms_relative_path = url_to_relative_path_with_options(&probe.probe_url, base_folder_url, false)?;
@@ -306,13 +291,18 @@ async fn execute_llms_fetch(
 
 	let llms_artifact_path_str = path_to_string(&llms_artifact_path)?;
 	let llms_hash = hash_bytes(&probe.body);
+	let mut registered = HashMap::new();
+	let llms_ids = context.progress.register_fetch_items(vec![(
+		probe.probe_url.as_str().to_owned(),
+		origin_llms_relative_path.clone(),
+	)]);
+	if let Some(id) = llms_ids.first() {
+		registered.insert(probe.probe_url.as_str().to_owned(), *id);
+		context
+			.progress
+			.fetch_completed(*id, &llms_relative_path, llms_artifact_path.clone());
+	}
 
-	let llms_process_item = ProcessItem {
-		source: llms_relative_path.clone(),
-		output_path: Some(llms_artifact_path.clone()),
-		stage: ProcessStage::Fetch,
-		usage: None,
-	};
 	manifest_items.push(FetchManifestItem {
 		source: probe.probe_url.as_str().to_owned(),
 		relative_path: llms_relative_path.clone(),
@@ -329,10 +319,6 @@ async fn execute_llms_fetch(
 		local_path: llms_artifact_path,
 		media_type: Some("text/plain".to_owned()),
 		source_hash: Some(llms_hash),
-	});
-	completed_items.push(llms_process_item.clone());
-	context.progress.publish(ProcessProgress::ItemCompleted {
-		item: llms_process_item,
 	});
 
 	let mut seen_relative_paths = HashSet::new();
@@ -358,16 +344,20 @@ async fn execute_llms_fetch(
 		if is_path_selected(&relative_path, &request.common) {
 			candidates.push((entry_url, relative_path));
 		} else {
-			let process_item = ProcessItem {
-				source: relative_path,
-				output_path: None,
-				stage: ProcessStage::Fetch,
-				usage: None,
-			};
-			skipped_items.push(process_item.clone());
-			context.progress.publish(ProcessProgress::ItemSkipped { item: process_item });
+			context.progress.add_excluded(ProcessStage::Fetch, 1);
 		}
 	}
+
+	let candidate_ids = context.progress.register_fetch_items(
+		candidates
+			.iter()
+			.map(|(url, relative_path)| (url.as_str().to_owned(), relative_path.clone()))
+			.collect(),
+	);
+	for ((url, _), id) in candidates.iter().zip(candidate_ids) {
+		registered.insert(url.as_str().to_owned(), id);
+	}
+	context.progress.set_stage_total(ProcessStage::Fetch);
 
 	let format = request.common.format;
 	let mut tasks = Vec::with_capacity(candidates.len());
@@ -380,6 +370,9 @@ async fn execute_llms_fetch(
 		let client = client.clone();
 		let base_folder = base_folder_url.clone();
 
+		if let Some(id) = registered.get(url.as_str()) {
+			context.progress.item_running(*id, ProcessStage::Fetch);
+		}
 		let task = tokio::spawn(async move {
 			let _permit = permit;
 			fetch_single_url_with_options(&client, &url, &base_folder, false, format).await
@@ -399,15 +392,11 @@ async fn execute_llms_fetch(
 				let source_url = fetched.url.as_str().to_owned();
 
 				if !stored_paths.insert(relative_path.clone()) {
-					let failure = ProcessFailure {
-						item: ProcessItem {
-							source: relative_path.clone(),
-							output_path: None,
-							stage: ProcessStage::Fetch,
-							usage: None,
-						},
-						message: format!("multiple input artifacts resolve to fetch path {relative_path}"),
-					};
+					let message = format!("multiple input artifacts resolve to fetch path {relative_path}");
+					has_failures = true;
+					if let Some(id) = registered.get(fetched.url.as_str()) {
+						context.progress.item_failed(*id, ProcessStage::Fetch, message);
+					}
 					let artifact_path = artifact_root.join(&relative_path);
 					manifest_items.push(FetchManifestItem {
 						source: source_url,
@@ -419,38 +408,26 @@ async fn execute_llms_fetch(
 						content_hash: fetched.content_hash.clone(),
 						artifact_hash: fetched.artifact_hash.clone(),
 					});
-					failures.push(failure.clone());
-					context.progress.publish(ProcessProgress::ItemFailed { failure });
 					continue;
 				}
 
 				let artifact_path = artifact_root.join(&relative_path);
 
 				if let Err(err) = ensure_parent(&artifact_path) {
-					let failure = ProcessFailure {
-						item: ProcessItem {
-							source: relative_path.clone(),
-							output_path: None,
-							stage: ProcessStage::Fetch,
-							usage: None,
-						},
-						message: err.to_string(),
-					};
-					failures.push(failure.clone());
-					context.progress.publish(ProcessProgress::ItemFailed { failure });
+					let message = err.to_string();
+					has_failures = true;
+					if let Some(id) = registered.get(fetched.url.as_str()) {
+						context.progress.item_failed(*id, ProcessStage::Fetch, message);
+					}
 					continue;
 				}
 
 				if let Err(err) = write_fetch_artifact(&artifact_path, &fetched.body) {
-					let failure = ProcessFailure {
-						item: ProcessItem {
-							source: relative_path.clone(),
-							output_path: None,
-							stage: ProcessStage::Fetch,
-							usage: None,
-						},
-						message: err.to_string(),
-					};
+					let message = err.to_string();
+					has_failures = true;
+					if let Some(id) = registered.get(fetched.url.as_str()) {
+						context.progress.item_failed(*id, ProcessStage::Fetch, message);
+					}
 					let artifact_path_str = path_to_string(&artifact_path).ok();
 					manifest_items.push(FetchManifestItem {
 						source: source_url,
@@ -462,19 +439,15 @@ async fn execute_llms_fetch(
 						content_hash: fetched.content_hash.clone(),
 						artifact_hash: fetched.artifact_hash.clone(),
 					});
-					failures.push(failure.clone());
-					context.progress.publish(ProcessProgress::ItemFailed { failure });
 					continue;
 				}
 
 				let artifact_path_str = path_to_string(&artifact_path)?;
-				let process_item = ProcessItem {
-					source: relative_path.clone(),
-					output_path: Some(artifact_path.clone()),
-					stage: ProcessStage::Fetch,
-					usage: None,
-				};
-
+				if let Some(id) = registered.get(fetched.url.as_str()) {
+					context
+						.progress
+						.fetch_completed(*id, &relative_path, artifact_path.clone());
+				}
 				manifest_items.push(FetchManifestItem {
 					source: source_url,
 					relative_path: relative_path.clone(),
@@ -494,36 +467,22 @@ async fn execute_llms_fetch(
 					source_hash: Some(fetched.artifact_hash),
 				});
 
-				completed_items.push(process_item.clone());
-				context.progress.publish(ProcessProgress::ItemCompleted { item: process_item });
 			}
 			Err((url, err_msg)) => {
-				let relative = url_to_relative_path_with_options(&url, base_folder_url, false)
-					.unwrap_or_else(|_| url.as_str().to_owned());
-				let failed_item = ProcessItem {
-					source: relative,
-					output_path: None,
-					stage: ProcessStage::Fetch,
-					usage: None,
-				};
-				let failure = ProcessFailure {
-					item: failed_item,
-					message: err_msg,
-				};
-				failures.push(failure.clone());
-				context.progress.publish(ProcessProgress::ItemFailed { failure });
+				has_failures = true;
+				if let Some(id) = registered.get(url.as_str()) {
+					context.progress.item_failed(*id, ProcessStage::Fetch, err_msg);
+				}
 			}
 		}
 	}
 
 	artifacts.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
-	completed_items.sort_by(|left, right| left.source.cmp(&right.source));
-	skipped_items.sort_by(|left, right| left.source.cmp(&right.source));
 	manifest_items.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
 
 	let manifest = FetchManifest {
 		version: FETCH_MANIFEST_VERSION,
-		complete: failures.is_empty(),
+		complete: !has_failures,
 		source: request.source.url.clone(),
 		source_path: request.source.url.clone(),
 		options: FetchManifestOptions::from(request),
@@ -537,9 +496,6 @@ async fn execute_llms_fetch(
 			root: artifact_root.clone(),
 			items: artifacts,
 		},
-		completed_items,
-		skipped_items,
-		failures,
 	})
 }
 
@@ -1162,6 +1118,7 @@ https://docs.typesafe.ai/doc/page2.md#anchor
 
 		let (tx, _rx) = new_progress_channel()?;
 		let state = Arc::new(ProcessStateStore::default());
+		let query = crate::process::ProcessQuery::new(state.clone());
 		let progress = crate::process::progress::ProcessProgressPublisher::new(tx, state);
 
 		let context = WorkflowContext {
@@ -1182,8 +1139,8 @@ https://docs.typesafe.ai/doc/page2.md#anchor
 		let stage_output = execute_http_fetch(&request, &context).await?;
 
 		// -- Check
-		assert_eq!(stage_output.completed_items.len(), 2);
-		assert!(stage_output.failures.is_empty());
+		assert_eq!(query.stats().fetch.completed, 2);
+		assert_eq!(query.stats().fetch.failed, 0);
 		assert_eq!(stage_output.artifacts.items.len(), 2);
 
 		let index_artifact = fetch_cache.join("index.md");

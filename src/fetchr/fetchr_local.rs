@@ -9,7 +9,7 @@ use super::support::{
 };
 use crate::fetchr::{FetchCommonOptions, LocalFetchRequest};
 use crate::process::pipeline::{ArtifactItem, ArtifactSet, StageOutput, WorkflowContext};
-use crate::process::{LocalContentSource, ProcessFailure, ProcessItem, ProcessProgress, ProcessStage};
+use crate::process::{ItemId, LocalContentSource, ProcessStage};
 use crate::{Error, Result};
 use simple_fs::{SPath, ensure_dir, list_files};
 use std::path::Path;
@@ -24,7 +24,7 @@ pub(crate) fn discover_local(request: &LocalFetchRequest) -> Result<LocalFetchDi
 	let source_kind = validate_source_kind(source_path, &source_identity)?;
 	let patterns = build_glob_patterns(&request.common);
 
-	let candidates = match source_kind {
+	let (candidates, excluded) = match source_kind {
 		LocalSourceKind::File => discover_single_file(source_path, &patterns)?,
 		LocalSourceKind::Directory => list_paths(source_path, &patterns)?,
 	};
@@ -64,6 +64,7 @@ pub(crate) fn discover_local(request: &LocalFetchRequest) -> Result<LocalFetchDi
 		source: source_identity,
 		source_path: source_path.clone(),
 		items,
+		excluded,
 	})
 }
 
@@ -84,29 +85,32 @@ pub(crate) async fn execute_local_fetch(request: &LocalFetchRequest, context: &W
 		source: source_identity,
 		source_path,
 		items,
+		excluded,
 	} = discover_local(request)?;
+	let ids = context.progress.register_fetch_items(
+		items
+			.iter()
+			.map(|item| (item.local_path.as_str().to_owned(), item.relative_path.clone()))
+			.collect(),
+	);
+	context.progress.add_excluded(ProcessStage::Fetch, excluded);
+	context.progress.set_stage_total(ProcessStage::Fetch);
+
 	let artifact_root = context.fetch_cache.clone();
 	ensure_dir(&artifact_root)?;
 
 	let mut artifacts = Vec::with_capacity(items.len());
-	let mut completed_items = Vec::with_capacity(items.len());
-	let mut failures = Vec::new();
+	let mut has_failures = false;
 	let mut manifest_items = Vec::with_capacity(items.len());
 	let mut prepared_items = Vec::with_capacity(items.len());
 
-	for item in &items {
+	for (item, id) in items.iter().zip(ids) {
 		let contents = match std::fs::read(item.local_path.as_std_path()) {
 			Ok(contents) => contents,
 			Err(error) => {
-				let failure = ProcessFailure {
-					item: ProcessItem {
-						source: item.relative_path.clone(),
-						output_path: None,
-						stage: ProcessStage::Fetch,
-						usage: None,
-					},
-					message: error.to_string(),
-				};
+				let message = error.to_string();
+				has_failures = true;
+				context.progress.item_failed(id, ProcessStage::Fetch, message);
 				manifest_items.push(manifest_item(
 					item,
 					&item.relative_path,
@@ -114,8 +118,6 @@ pub(crate) async fn execute_local_fetch(request: &LocalFetchRequest, context: &W
 					None,
 					String::new(),
 				)?);
-				failures.push(failure.clone());
-				context.progress.publish(ProcessProgress::ItemFailed { failure });
 				continue;
 			}
 		};
@@ -126,17 +128,11 @@ pub(crate) async fn execute_local_fetch(request: &LocalFetchRequest, context: &W
 			&contents,
 			request.common.format,
 		) {
-			Ok(formatted) => prepared_items.push((item.clone(), formatted)),
+			Ok(formatted) => prepared_items.push((id, item.clone(), formatted)),
 			Err(error) => {
-				let failure = ProcessFailure {
-					item: ProcessItem {
-						source: item.relative_path.clone(),
-						output_path: None,
-						stage: ProcessStage::Fetch,
-						usage: None,
-					},
-					message: error.to_string(),
-				};
+				let message = error.to_string();
+				has_failures = true;
+				context.progress.item_failed(id, ProcessStage::Fetch, message);
 				manifest_items.push(manifest_item(
 					item,
 					&item.relative_path,
@@ -144,36 +140,27 @@ pub(crate) async fn execute_local_fetch(request: &LocalFetchRequest, context: &W
 					None,
 					String::new(),
 				)?);
-				failures.push(failure.clone());
-				context.progress.publish(ProcessProgress::ItemFailed { failure });
 			}
 		}
 	}
 
 	let mut stored_path_counts = std::collections::BTreeMap::<String, usize>::new();
-	for (_, formatted) in &prepared_items {
+	for (_, _, formatted) in &prepared_items {
 		*stored_path_counts.entry(formatted.relative_path.clone()).or_default() += 1;
 	}
 
 	let semaphore = Arc::new(Semaphore::new(context.max_concurrency));
 	let mut materializations = Vec::with_capacity(prepared_items.len());
 
-	for (item, formatted) in prepared_items {
+	for (id, item, formatted) in prepared_items {
 		let artifact_hash = hash_bytes(&formatted.bytes);
 		if stored_path_counts.get(&formatted.relative_path).copied().unwrap_or_default() > 1 {
 			let message = format!(
 				"multiple input artifacts resolve to fetch path {}",
 				formatted.relative_path
 			);
-			let failure = ProcessFailure {
-				item: ProcessItem {
-					source: formatted.relative_path.clone(),
-					output_path: None,
-					stage: ProcessStage::Fetch,
-					usage: None,
-				},
-				message,
-			};
+			has_failures = true;
+			context.progress.item_failed(id, ProcessStage::Fetch, message.clone());
 			manifest_items.push(manifest_item(
 				&item,
 				&formatted.relative_path,
@@ -181,8 +168,6 @@ pub(crate) async fn execute_local_fetch(request: &LocalFetchRequest, context: &W
 				None,
 				artifact_hash,
 			)?);
-			failures.push(failure.clone());
-			context.progress.publish(ProcessProgress::ItemFailed { failure });
 			continue;
 		}
 
@@ -196,26 +181,24 @@ pub(crate) async fn execute_local_fetch(request: &LocalFetchRequest, context: &W
 			.acquire_owned()
 			.await
 			.map_err(|_| Error::MalformedState("Fetch materialization concurrency control closed".to_owned()))?;
+		context.progress.item_running(id, ProcessStage::Fetch);
 		let task = tokio::task::spawn_blocking(move || {
 			let _permit = permit;
 			write_fetch_artifact(&task_artifact_path, &task_bytes).map_err(|error| error.to_string())
 		});
-		materializations.push((item, relative_path, media_type, artifact_path, artifact_hash, task));
+		materializations.push((id, item, relative_path, media_type, artifact_path, artifact_hash, task));
 	}
 
-	for (item, relative_path, media_type, artifact_path, artifact_hash, task) in materializations {
+	for (id, item, relative_path, media_type, artifact_path, artifact_hash, task) in materializations {
 		let item_result = task
 			.await
 			.map_err(|error| Error::MalformedState(format!("Fetch materialization task failed: {error}")))?;
 
 		match item_result {
 			Ok(()) => {
-				let process_item = ProcessItem {
-					source: relative_path.clone(),
-					output_path: Some(artifact_path.clone()),
-					stage: ProcessStage::Fetch,
-					usage: None,
-				};
+				context
+					.progress
+					.fetch_completed(id, &relative_path, artifact_path.clone());
 				let artifact = ArtifactItem {
 					source: item.source.clone(),
 					relative_path: relative_path.clone(),
@@ -231,19 +214,10 @@ pub(crate) async fn execute_local_fetch(request: &LocalFetchRequest, context: &W
 					artifact_hash,
 				)?);
 				artifacts.push(artifact);
-				completed_items.push(process_item.clone());
-				context.progress.publish(ProcessProgress::ItemCompleted { item: process_item });
 			}
 			Err(error) => {
-				let failure = ProcessFailure {
-					item: ProcessItem {
-						source: relative_path.clone(),
-						output_path: None,
-						stage: ProcessStage::Fetch,
-						usage: None,
-					},
-					message: error,
-				};
+				has_failures = true;
+				context.progress.item_failed(id, ProcessStage::Fetch, error);
 				manifest_items.push(manifest_item(
 					&item,
 					&relative_path,
@@ -251,15 +225,11 @@ pub(crate) async fn execute_local_fetch(request: &LocalFetchRequest, context: &W
 					None,
 					artifact_hash,
 				)?);
-				failures.push(failure.clone());
-				context.progress.publish(ProcessProgress::ItemFailed { failure });
 			}
 		}
 	}
 
 	artifacts.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
-	completed_items.sort_by(|left, right| left.source.cmp(&right.source));
-	failures.sort_by(|left, right| left.item.source.cmp(&right.item.source));
 	manifest_items.sort_by(|left, right| {
 		left.relative_path
 			.cmp(&right.relative_path)
@@ -268,7 +238,7 @@ pub(crate) async fn execute_local_fetch(request: &LocalFetchRequest, context: &W
 
 	let manifest = FetchManifest {
 		version: FETCH_MANIFEST_VERSION,
-		complete: failures.is_empty(),
+		complete: !has_failures,
 		source: source_identity,
 		source_path: path_to_string(&source_path)?,
 		options: FetchManifestOptions::from(request),
@@ -282,9 +252,6 @@ pub(crate) async fn execute_local_fetch(request: &LocalFetchRequest, context: &W
 			root: artifact_root,
 			items: artifacts,
 		},
-		completed_items,
-		skipped_items: Vec::new(),
-		failures,
 	})
 }
 
@@ -492,8 +459,7 @@ fn build_reused_stage_output(
 	context: &WorkflowContext,
 ) -> Result<Option<StageOutput>> {
 	let artifact_root = context.fetch_cache.clone();
-	let mut artifacts = Vec::with_capacity(discovery.items.len());
-	let mut skipped_items = Vec::with_capacity(discovery.items.len());
+	let mut reusable_items = Vec::with_capacity(discovery.items.len());
 
 	for current_item in &discovery.items {
 		let Some(manifest_item) = manifest
@@ -521,38 +487,46 @@ fn build_reused_stage_output(
 			return Ok(None);
 		}
 
+		reusable_items.push((current_item, manifest_item, artifact_path));
+	}
+
+	let ids = context.progress.register_fetch_items(
+		discovery
+			.items
+			.iter()
+			.map(|item| (item.local_path.as_str().to_owned(), item.relative_path.clone()))
+			.collect(),
+	);
+	context
+		.progress
+		.add_excluded(ProcessStage::Fetch, discovery.excluded);
+	context.progress.set_stage_total(ProcessStage::Fetch);
+
+	let mut artifacts = Vec::with_capacity(discovery.items.len());
+
+	for ((current_item, manifest_item, artifact_path), id) in reusable_items.into_iter().zip(ids) {
+		let relative_path = manifest_item.relative_path.clone();
 		let artifact = ArtifactItem {
 			source: current_item.source.clone(),
-			relative_path: manifest_item.relative_path.clone(),
+			relative_path: relative_path.clone(),
 			local_path: artifact_path.clone(),
 			media_type: manifest_item.media_type.clone(),
 			source_hash: Some(manifest_item.artifact_hash.clone()),
 		};
-		let process_item = ProcessItem {
-			source: manifest_item.relative_path.clone(),
-			output_path: Some(artifact_path),
-			stage: ProcessStage::Fetch,
-			usage: None,
-		};
 
-		context.progress.publish(ProcessProgress::ItemSkipped {
-			item: process_item.clone(),
-		});
+		context
+			.progress
+			.fetch_reused(id, &relative_path, artifact.local_path.clone());
 		artifacts.push(artifact);
-		skipped_items.push(process_item);
 	}
 
 	artifacts.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
-	skipped_items.sort_by(|left, right| left.source.cmp(&right.source));
 
 	Ok(Some(StageOutput {
 		artifacts: ArtifactSet {
 			root: artifact_root,
 			items: artifacts,
 		},
-		completed_items: Vec::new(),
-		skipped_items,
-		failures: Vec::new(),
 	}))
 }
 
@@ -665,7 +639,7 @@ fn build_glob_patterns(common: &FetchCommonOptions) -> Vec<String> {
 	patterns
 }
 
-fn list_paths(root: &SPath, patterns: &[String]) -> Result<Vec<SPath>> {
+fn list_paths(root: &SPath, patterns: &[String]) -> Result<(Vec<SPath>, usize)> {
 	let mut include_patterns = Vec::new();
 	let mut exclude_patterns = Vec::new();
 
@@ -686,15 +660,16 @@ fn list_paths(root: &SPath, patterns: &[String]) -> Result<Vec<SPath>> {
 	let paths = list_files(root, Some(include_patterns.as_slice()), None)?;
 
 	if exclude_patterns.is_empty() {
-		return Ok(paths);
+		return Ok((paths, 0));
 	}
 
+	let matched_count = paths.len();
 	let excluded_paths = list_files(root, Some(exclude_patterns.as_slice()), None)?
 		.into_iter()
 		.map(|path| local_path_for_candidate(root, path))
 		.collect::<Vec<_>>();
 
-	Ok(paths
+	let selected_paths = paths
 		.into_iter()
 		.filter(|candidate| {
 			let candidate = local_path_for_candidate(root, candidate.clone());
@@ -705,10 +680,13 @@ fn list_paths(root: &SPath, patterns: &[String]) -> Result<Vec<SPath>> {
 				paths_equivalent(candidate_path, excluded_path)
 			})
 		})
-		.collect())
+		.collect::<Vec<_>>();
+	let excluded_count = matched_count.saturating_sub(selected_paths.len());
+
+	Ok((selected_paths, excluded_count))
 }
 
-fn discover_single_file(path: &SPath, patterns: &[String]) -> Result<Vec<SPath>> {
+fn discover_single_file(path: &SPath, patterns: &[String]) -> Result<(Vec<SPath>, usize)> {
 	let source_path: &Path = path.as_ref();
 	let file_name = source_path
 		.file_name()
@@ -719,15 +697,15 @@ fn discover_single_file(path: &SPath, patterns: &[String]) -> Result<Vec<SPath>>
 		.filter(|parent| !parent.as_os_str().is_empty())
 		.unwrap_or_else(|| Path::new("."));
 	let parent = SPath::from(parent.to_string_lossy().into_owned());
-	let candidates = list_paths(&parent, patterns)?;
+	let (candidates, _) = list_paths(&parent, patterns)?;
 
 	if candidates
 		.iter()
 		.any(|candidate| candidate_matches_file(candidate, path, file_name))
 	{
-		Ok(vec![path.clone()])
+		Ok((vec![path.clone()], 0))
 	} else {
-		Ok(Vec::new())
+		Ok((Vec::new(), 1))
 	}
 }
 
@@ -832,6 +810,7 @@ mod tests {
 			.map(|item| item.relative_path.as_str())
 			.collect::<Vec<_>>();
 		assert_eq!(relative_paths, vec!["alpha.txt", "nested/beta.txt"]);
+		assert_eq!(discovery.excluded, 1);
 
 		Ok(())
 	}

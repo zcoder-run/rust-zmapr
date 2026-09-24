@@ -3,8 +3,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use zmapr::{
-	ContentMapDocument, MaprAiClient, MaprAiSelector, ProcessContentOptions,
-	ProcessProgress, ProcessStage, process_content, set_active_ai_selector,
+	ContentMapDocument, ItemState, ItemStatus, MaprAiClient, MaprAiSelector, ProcessContentOptions,
+	ProcessStage, ProgressEvent, StageStatus, process_content, set_active_ai_selector,
 };
 
 type Result<T> = core::result::Result<T, Box<dyn std::error::Error>>; // For tests.
@@ -33,6 +33,7 @@ async fn test_process_content_map_with_stub_publishes_output_and_content_map() -
 
 	// -- Exec
 	let mut handle = process_content(options).await?;
+	let query = handle.query();
 	let mut progress_rx = handle.take_progress_rx().ok_or("expected progress receiver")?;
 
 	let progress_task = tokio::spawn(async move {
@@ -47,8 +48,26 @@ async fn test_process_content_map_with_stub_publishes_output_and_content_map() -
 	let progress_events = progress_task.await?;
 
 	// -- Check
-	assert!(output.failures.is_empty());
-	assert_eq!(output.completed_items.len(), 6); // 4 from fetch + 2 from mapr
+	assert_eq!(
+		output.stats.fetch.as_ref().ok_or("expected Fetch stats")?.completed
+			+ output.stats.map.as_ref().ok_or("expected Map stats")?.completed,
+		6
+	); // 4 from fetch + 2 from mapr
+	let stats = query.stats();
+	assert_eq!(stats.map.completed, 2);
+	assert_eq!(stats.map.skipped, 2);
+	assert_eq!(stats.map.total_items, Some(4));
+	assert_eq!(stats.map.status, StageStatus::Completed);
+	assert_eq!(stats.total_usage, output.stats.total_usage);
+	let intro_item = query.item_by_path("intro.md").ok_or("expected intro.md item")?;
+	assert_eq!(
+		intro_item.fetch.as_ref().map(|state| state.status),
+		Some(ItemStatus::Completed)
+	);
+	assert_eq!(
+		intro_item.map.as_ref().map(|state| state.status),
+		Some(ItemStatus::Completed)
+	);
 
 	let manifest_path = output.manifest_path.as_ref().ok_or("expected manifest_path")?;
 	assert!(manifest_path.is_file());
@@ -68,22 +87,10 @@ async fn test_process_content_map_with_stub_publishes_output_and_content_map() -
 		b"# Introduction\nWelcome."
 	);
 
-	let mapr_completed = output
-		.completed_items
-		.iter()
-		.filter(|item| item.stage == ProcessStage::Map)
-		.collect::<Vec<_>>();
-	assert_eq!(mapr_completed.len(), 2);
-	let mapr_completed_sources = mapr_completed.iter().map(|item| item.source.as_str()).collect::<Vec<_>>();
+	let mapr_completed_sources = relative_paths(&output.items, ProcessStage::Map, ItemStatus::Completed);
 	assert_eq!(mapr_completed_sources, vec!["code.rs", "intro.md"]);
 
-	let mapr_skipped = output
-		.skipped_items
-		.iter()
-		.filter(|item| item.stage == ProcessStage::Map)
-		.collect::<Vec<_>>();
-	assert_eq!(mapr_skipped.len(), 2);
-	let mapr_skipped_sources = mapr_skipped.iter().map(|item| item.source.as_str()).collect::<Vec<_>>();
+	let mapr_skipped_sources = relative_paths(&output.items, ProcessStage::Map, ItemStatus::Skipped);
 	assert_eq!(mapr_skipped_sources, vec!["image.png", "oversize.txt"]);
 
 	let content_map_path = output.content_map_path.as_ref().ok_or("expected content_map_path")?;
@@ -113,52 +120,79 @@ async fn test_process_content_map_with_stub_publishes_output_and_content_map() -
 	assert_eq!(intro_entry.topics, vec!["stub".to_string(), "test".to_string()]);
 	assert!(document.folder_map.is_empty());
 
-	let mapr_completed_events = progress_events
+	let mapr_completed_ids = progress_events
 		.iter()
-		.filter_map(|ev| match ev {
-			ProcessProgress::ItemCompleted { item } if item.stage == ProcessStage::Map => Some(item),
+		.filter_map(|update| match &update.event {
+			ProgressEvent::ItemStatusChanged {
+				id,
+				stage: ProcessStage::Map,
+				status: ItemStatus::Completed,
+			} => Some(*id),
 			_ => None,
 		})
 		.collect::<Vec<_>>();
-	assert_eq!(mapr_completed_events.len(), 2);
-	for item in &mapr_completed_events {
-		assert!(item.usage.is_some());
+	assert_eq!(mapr_completed_ids.len(), 2);
+	for id in &mapr_completed_ids {
+		let item = query.item(*id).ok_or("expected completed Map item")?;
+		assert!(item.map.as_ref().and_then(|state| state.usage.as_ref()).is_some());
 	}
 
 	let journal_file = destination.join(".tmp-zmapr").join("content-map.journal.jsonl");
 	assert!(journal_file.is_file());
 	assert_eq!(fs::metadata(&journal_file)?.len(), 0);
 
-	let total_usage = output.total_usage.as_ref().ok_or("expected total_usage on output")?;
-	let sum_prompt: i32 = mapr_completed_events
+	let total_usage = output
+		.stats
+		.total_usage
+		.as_ref()
+		.ok_or("expected total_usage on output")?;
+	let sum_prompt: i32 = mapr_completed_ids
 		.iter()
-		.filter_map(|item| item.usage.as_ref().and_then(|u| u.prompt_tokens))
+		.filter_map(|id| {
+			query
+				.item(*id)
+				.and_then(|item| item.map)
+				.and_then(|state| state.usage)
+				.and_then(|usage| usage.prompt_tokens)
+		})
 		.sum();
-	let sum_completion: i32 = mapr_completed_events
+	let sum_completion: i32 = mapr_completed_ids
 		.iter()
-		.filter_map(|item| item.usage.as_ref().and_then(|u| u.completion_tokens))
+		.filter_map(|id| {
+			query
+				.item(*id)
+				.and_then(|item| item.map)
+				.and_then(|state| state.usage)
+				.and_then(|usage| usage.completion_tokens)
+		})
 		.sum();
-	let sum_total: i32 = mapr_completed_events
+	let sum_total: i32 = mapr_completed_ids
 		.iter()
-		.filter_map(|item| item.usage.as_ref().and_then(|u| u.total_tokens))
+		.filter_map(|id| {
+			query
+				.item(*id)
+				.and_then(|item| item.map)
+				.and_then(|state| state.usage)
+				.and_then(|usage| usage.total_tokens)
+		})
 		.sum();
 
 	assert_eq!(total_usage.prompt_tokens, Some(sum_prompt));
 	assert_eq!(total_usage.completion_tokens, Some(sum_completion));
 	assert_eq!(total_usage.total_tokens, Some(sum_total));
 
-	let has_stage_started = progress_events.iter().any(|ev| {
+	let has_stage_started = progress_events.iter().any(|update| {
 		matches!(
-			ev,
-			ProcessProgress::StageStarted {
+			&update.event,
+			ProgressEvent::StageStarted {
 			stage: ProcessStage::Map
 			}
 		)
 	});
-	let has_stage_completed = progress_events.iter().any(|ev| {
+	let has_stage_completed = progress_events.iter().any(|update| {
 		matches!(
-			ev,
-			ProcessProgress::StageCompleted {
+			&update.event,
+			ProgressEvent::StageCompleted {
 			stage: ProcessStage::Map
 			}
 		)
@@ -209,11 +243,7 @@ async fn test_process_content_map_journal_reuse_on_second_run() -> Result<()> {
 			.any(|line| line.contains(r#""path":"intro.md""#))
 	);
 
-	let first_mapr_completed = first_output
-		.completed_items
-		.iter()
-		.filter(|item| item.stage == ProcessStage::Map)
-		.count();
+	let first_mapr_completed = first_output.stats.map.as_ref().ok_or("expected Map stats")?.completed;
 	assert_eq!(first_mapr_completed, 1);
 
 	let fetch_copy = destination.join(".tmp-zmapr").join("01-fetch").join("intro.md");
@@ -221,23 +251,16 @@ async fn test_process_content_map_journal_reuse_on_second_run() -> Result<()> {
 
 	// -- Exec: second run with unchanged source
 	let second_handle = process_content(run_options()).await?;
+	let second_query = second_handle.query();
 	let second_output = second_handle.wait_output().await?;
 
 	// -- Check: item reused from journal
-	let second_mapr_completed = second_output
-		.completed_items
-		.iter()
-		.filter(|item| item.stage == ProcessStage::Map)
-		.count();
+	assert_eq!(second_query.stats().map.reused, 1);
+	let second_mapr_completed = second_output.stats.map.as_ref().ok_or("expected Map stats")?.completed;
 	assert_eq!(second_mapr_completed, 0);
 
-	let second_mapr_skipped = second_output
-		.skipped_items
-		.iter()
-		.filter(|item| item.stage == ProcessStage::Map)
-		.collect::<Vec<_>>();
-	assert_eq!(second_mapr_skipped.len(), 1);
-	assert_eq!(second_mapr_skipped[0].source, "intro.md");
+	let second_mapr_reused = relative_paths(&second_output.items, ProcessStage::Map, ItemStatus::Reused);
+	assert_eq!(second_mapr_reused, vec!["intro.md"]);
 	assert_eq!(fs::read(&fetch_copy)?, b"# Intro\nReused content.");
 	assert_eq!(
 		fs::read(source_root.join("intro.md"))?,
@@ -260,7 +283,7 @@ async fn test_process_content_map_journal_reuse_on_second_run() -> Result<()> {
 		.ok_or("expected second intro.md metadata")?;
 	assert_eq!(second_metadata.source_hash, first_metadata.source_hash);
 
-	assert_eq!(second_output.total_usage, None);
+	assert_eq!(second_output.stats.total_usage, None);
 
 	set_active_ai_selector(None);
 	Ok(())
@@ -290,7 +313,7 @@ async fn test_process_content_map_copies_html_as_markdown() -> Result<()> {
 	let output = handle.wait_output().await?;
 
 	// -- Check
-	assert!(output.failures.is_empty());
+	assert_eq!(output.stats.map.as_ref().ok_or("expected Map stats")?.failed, 0);
 	let markdown = fs::read_to_string(destination.join(".tmp-zmapr").join("01-fetch").join("index.md"))?;
 	assert!(markdown.contains("Mapper copy"));
 	assert!(markdown.contains("Prepared Markdown."));
@@ -355,7 +378,10 @@ async fn test_process_content_map_publishes_recovered_entries_before_ai_work() -
 	let second_output = second_handle.wait_output().await?;
 
 	// -- Check
-	assert!(second_output.failures.is_empty());
+	assert_eq!(
+		second_output.stats.map.as_ref().ok_or("expected Map stats")?.failed,
+		0
+	);
 	let content_map_path = second_output.content_map_path.as_ref().ok_or("expected content_map_path")?;
 	let document: ContentMapDocument = serde_json::from_slice(&fs::read(content_map_path.as_std_path())?)?;
 	assert!(document.file_map.contains_key("intro.md"));
@@ -407,22 +433,26 @@ async fn test_process_content_map_item_failure_is_recorded_and_stage_completes()
 
 	// -- Exec
 	let handle = process_content(options).await?;
+	let query = handle.query();
 	let output = handle.wait_output().await?;
 
 	// -- Check
-	assert_eq!(output.failures.len(), 1);
-	let failure = &output.failures[0];
-	assert_eq!(failure.item.source, "fail.md");
-	assert_eq!(failure.item.stage, ProcessStage::Map);
-	assert!(failure.message.contains("simulated AI provider failure"));
-
-	let mapr_completed = output
-		.completed_items
-		.iter()
-		.filter(|item| item.stage == ProcessStage::Map)
-		.collect::<Vec<_>>();
-	assert_eq!(mapr_completed.len(), 1);
-	assert_eq!(mapr_completed[0].source, "good.md");
+	assert_eq!(output.stats.map.as_ref().ok_or("expected Map stats")?.failed, 1);
+	let stats = query.stats();
+	assert_eq!(stats.map.failed, 1);
+	let failed_item = query.item_by_path("fail.md").ok_or("expected fail.md item")?;
+	let map_state = failed_item.map.as_ref().ok_or("expected Map state")?;
+	assert_eq!(map_state.status, ItemStatus::Failed);
+	assert_eq!(failed_item.relative_path, "fail.md");
+	assert!(
+		map_state
+			.error
+			.as_deref()
+			.ok_or("expected Map failure detail")?
+			.contains("simulated AI provider failure")
+	);
+	let mapr_completed = relative_paths(&output.items, ProcessStage::Map, ItemStatus::Completed);
+	assert_eq!(mapr_completed, vec!["good.md"]);
 
 	let content_map_path = output.content_map_path.as_ref().ok_or("expected content_map_path")?;
 	let content_str = fs::read_to_string(content_map_path.as_std_path())?;
@@ -520,6 +550,7 @@ async fn test_process_content_map_exact_usage_and_journal_emptied() -> Result<()
 
 	// -- Exec
 	let mut handle = process_content(options).await?;
+	let query = handle.query();
 	let mut progress_rx = handle.take_progress_rx().ok_or("expected progress receiver")?;
 
 	let progress_task = tokio::spawn(async move {
@@ -534,25 +565,41 @@ async fn test_process_content_map_exact_usage_and_journal_emptied() -> Result<()
 	let progress_events = progress_task.await?;
 
 	// -- Check
-	assert!(output.failures.is_empty());
-	assert_eq!(output.completed_items.len(), 4);
+	assert_eq!(
+		output.stats.fetch.as_ref().ok_or("expected Fetch stats")?.completed
+			+ output.stats.map.as_ref().ok_or("expected Map stats")?.completed,
+		4
+	);
 
-	let completed_mapr_events = progress_events
+	let completed_mapr_ids = progress_events
 		.iter()
-		.filter_map(|ev| match ev {
-			ProcessProgress::ItemCompleted { item } if item.stage == ProcessStage::Map => Some(item),
+		.filter_map(|update| match &update.event {
+			ProgressEvent::ItemStatusChanged {
+				id,
+				stage: ProcessStage::Map,
+				status: ItemStatus::Completed,
+			} => Some(*id),
 			_ => None,
 		})
 		.collect::<Vec<_>>();
-	assert_eq!(completed_mapr_events.len(), 2);
-	for item in &completed_mapr_events {
-		let usage = item.usage.as_ref().ok_or("expected item usage")?;
+	assert_eq!(completed_mapr_ids.len(), 2);
+	for id in &completed_mapr_ids {
+		let item = query.item(*id).ok_or("expected completed Map item")?;
+		let usage = item
+			.map
+			.as_ref()
+			.and_then(|state| state.usage.as_ref())
+			.ok_or("expected item usage")?;
 		assert_eq!(usage.prompt_tokens, Some(100));
 		assert_eq!(usage.completion_tokens, Some(50));
 		assert_eq!(usage.total_tokens, Some(150));
 	}
 
-	let total_usage = output.total_usage.as_ref().ok_or("expected aggregate total_usage")?;
+	let total_usage = output
+		.stats
+		.total_usage
+		.as_ref()
+		.ok_or("expected aggregate total_usage")?;
 	assert_eq!(total_usage.prompt_tokens, Some(200));
 	assert_eq!(total_usage.completion_tokens, Some(100));
 	assert_eq!(total_usage.total_tokens, Some(300));
@@ -606,6 +653,16 @@ fn fixture_root(test_name: &str) -> Result<PathBuf> {
 
 fn path_text(path: &Path) -> String {
 	path.to_string_lossy().replace('\\', "/")
+}
+
+fn relative_paths(items: &[ItemState], stage: ProcessStage, status: ItemStatus) -> Vec<String> {
+	let mut paths = items
+		.iter()
+		.filter(|item| item.stage(stage).is_some_and(|state| state.status == status))
+		.map(|item| item.relative_path.clone())
+		.collect::<Vec<_>>();
+	paths.sort();
+	paths
 }
 
 // endregion: --- Support

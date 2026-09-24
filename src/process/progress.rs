@@ -1,36 +1,37 @@
-use super::response::{ProcessContentOutput, ProcessFailure, ProcessItem, ProcessStage};
+use super::item::{ItemId, ItemStatus};
+use super::response::{ProcessContentOutput, ProcessStage};
+use super::stats::{FinalStats, ProgressStats};
 use super::state::ProcessStateStore;
 use crate::event_base::{EventBaseError, MpscRx, MpscTx, OnceRx, OnceTx, new_mpsc_bounded_default, new_once};
 use crate::{Error, Result};
+use simple_fs::SPath;
 use std::fmt;
 use std::sync::Arc;
 
 // region:    --- Types
 
-/// A progress notification emitted by the workflow.
-///
-/// Notifications are observational and may be dropped when the bounded progress
-/// channel is full.
 #[derive(Debug, Clone)]
-pub enum ProcessProgress {
-	/// A processing stage started.
+pub enum ProgressEvent {
 	StageStarted { stage: ProcessStage },
-
-	/// An item completed successfully.
-	ItemCompleted { item: ProcessItem },
-
-	/// An item was skipped or reused.
-	ItemSkipped { item: ProcessItem },
-
-	/// An item failed during processing.
-	ItemFailed { failure: ProcessFailure },
-
-	/// A processing stage completed.
 	StageCompleted { stage: ProcessStage },
+	StageFailed { stage: ProcessStage, message: String },
+	ItemsRegistered { stage: ProcessStage, count: usize },
+	ItemsExcluded { stage: ProcessStage, count: usize },
+	StageTotalKnown { stage: ProcessStage, total_items: usize },
+	ItemStatusChanged { id: ItemId, stage: ProcessStage, status: ItemStatus },
+	WorkflowCompleted,
+	WorkflowFailed { message: String },
 }
 
-pub(crate) type ProcessProgressTx = MpscTx<ProcessProgress>;
-pub(crate) type ProcessProgressRx = MpscRx<ProcessProgress>;
+#[derive(Debug, Clone)]
+pub struct ProgressUpdate {
+	pub seq: u64,
+	pub event: ProgressEvent,
+	pub stats: ProgressStats,
+}
+
+pub(crate) type ProcessProgressTx = MpscTx<ProgressUpdate>;
+pub(crate) type ProcessProgressRx = MpscRx<ProgressUpdate>;
 pub(crate) type ProcessCompletionTx = OnceTx<Result<ProcessContentOutput>>;
 pub(crate) type ProcessCompletionRx = OnceRx<Result<ProcessContentOutput>>;
 
@@ -51,7 +52,7 @@ pub(crate) struct ProcessProgressPublisher {
 
 pub(crate) fn new_progress_channel() -> Result<(ProcessProgressTx, ProgressRx)> {
 	let (tx, rx) =
-		new_mpsc_bounded_default::<ProcessProgress>("process-progress").map_err(event_base_error_to_error)?;
+		new_mpsc_bounded_default::<ProgressUpdate>("process-progress").map_err(event_base_error_to_error)?;
 
 	Ok((tx, ProgressRx::new(rx)))
 }
@@ -81,15 +82,143 @@ impl ProcessProgressPublisher {
 // region:    --- Operations
 
 impl ProcessProgressPublisher {
-	pub(crate) fn publish(&self, progress: ProcessProgress) {
-		self.state.record(&progress);
-		let _ = self.tx.try_send(progress);
+	pub(crate) fn stage_started(&self, stage: ProcessStage) {
+		let update = self.state.stage_started(stage);
+		self.send_update(update);
+	}
+
+	pub(crate) fn stage_completed(&self, stage: ProcessStage) {
+		let update = self.state.stage_completed(stage);
+		self.send_update(update);
+	}
+
+	pub(crate) fn fail_workflow(&self, message: &str) {
+		for update in self.state.fail_workflow(message) {
+			self.send_update(update);
+		}
+	}
+
+	pub(crate) fn finish(&self) -> Result<(FinalStats, Vec<super::item::ItemState>)> {
+		let (update, result) = self.state.finish();
+		self.send_update(update);
+		result
+	}
+
+	pub(crate) fn register_fetch_items(&self, entries: Vec<(String, String)>) -> Vec<ItemId> {
+		let (ids, update) = self.state.register_items(ProcessStage::Fetch, entries, false);
+		self.send_update(update);
+		ids
+	}
+
+	pub(crate) fn register_stage_items(
+		&self,
+		stage: ProcessStage,
+		entries: Vec<(String, String)>,
+	) -> Vec<ItemId> {
+		let (ids, update) = self.state.register_items(stage, entries, true);
+		self.send_update(update);
+		ids
+	}
+
+	pub(crate) fn set_stage_total(&self, stage: ProcessStage) {
+		self.send_update(self.state.set_stage_total(stage));
+	}
+
+	pub(crate) fn add_excluded(&self, stage: ProcessStage, count: usize) {
+		if count == 0 {
+			return;
+		}
+		self.send_update(self.state.add_excluded(stage, count));
+	}
+
+	pub(crate) fn item_running(&self, id: ItemId, stage: ProcessStage) {
+		if let Some(update) = self
+			.state
+			.set_item_status(id, stage, ItemStatus::Running, None, None, None, None) {
+			self.send_update(update);
+		}
+	}
+
+	pub(crate) fn item_completed(
+		&self,
+		id: ItemId,
+		stage: ProcessStage,
+		path: Option<SPath>,
+		usage: Option<genai::chat::Usage>,
+	) {
+		if let Some(update) = self
+			.state
+			.set_item_status(id, stage, ItemStatus::Completed, path, usage, None, None) {
+			self.send_update(update);
+		}
+	}
+
+	pub(crate) fn item_reused(&self, id: ItemId, stage: ProcessStage, path: Option<SPath>) {
+		if let Some(update) = self
+			.state
+			.set_item_status(id, stage, ItemStatus::Reused, path, None, None, None) {
+			self.send_update(update);
+		}
+	}
+
+	pub(crate) fn item_skipped(&self, id: ItemId, stage: ProcessStage, path: Option<SPath>) {
+		if let Some(update) = self
+			.state
+			.set_item_status(id, stage, ItemStatus::Skipped, path, None, None, None) {
+			self.send_update(update);
+		}
+	}
+
+	pub(crate) fn item_failed(&self, id: ItemId, stage: ProcessStage, message: impl Into<String>) {
+		if let Some(update) = self.state.set_item_status(
+			id,
+			stage,
+			ItemStatus::Failed,
+			None,
+			None,
+			Some(message.into()),
+			None,
+		) {
+			self.send_update(update);
+		}
+	}
+
+	pub(crate) fn fetch_completed(&self, id: ItemId, relative_path: &str, path: SPath) {
+		if let Some(update) = self.state.set_item_status(
+			id,
+			ProcessStage::Fetch,
+			ItemStatus::Completed,
+			Some(path),
+			None,
+			None,
+			Some(relative_path),
+		) {
+			self.send_update(update);
+		}
+	}
+
+	pub(crate) fn fetch_reused(&self, id: ItemId, relative_path: &str, path: SPath) {
+		if let Some(update) = self.state.set_item_status(
+			id,
+			ProcessStage::Fetch,
+			ItemStatus::Reused,
+			Some(path),
+			None,
+			None,
+			Some(relative_path),
+		) {
+			self.send_update(update);
+		}
+	}
+
+	fn send_update(&self, update: ProgressUpdate) {
+		let _ = self.tx.try_send(update);
 	}
 }
 
 impl ProgressRx {
 	/// Receives the next progress notification.
-	pub async fn recv(&mut self) -> Result<ProcessProgress> {
+	pub async fn recv(&mut self) -> Result<ProgressUpdate> {
 		self.inner.recv().await.map_err(event_base_error_to_error)
 	}
 

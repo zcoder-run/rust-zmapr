@@ -1,7 +1,7 @@
 use super::pipeline::{StageOutput, WorkflowContext, build_fetch_request, run_pipeline};
 use super::progress::{ProcessProgressPublisher, new_completion_channel, new_progress_channel};
 use super::response::{ProcessContentHandle, ProcessContentOutput};
-use super::state::{ProcessQuery, new_process_state};
+use super::state::{ProcessQuery, StageSelection, new_process_state};
 use crate::fetchr::{FetchRequest, validate_source, validate_web_source};
 use crate::{ContentSource, Error, ProcessContentOptions, ProcessStage, Result, SanitizePrompt};
 use simple_fs::SPath;
@@ -11,7 +11,11 @@ pub async fn process_content(options: ProcessContentOptions) -> Result<ProcessCo
 	let layout = validate_request(&options, fetch_request.as_ref())?;
 	let source = resolve_source(&options, fetch_request.as_ref(), &layout);
 	let (progress_tx, progress_rx) = new_progress_channel()?;
-	let state = new_process_state();
+	let state = new_process_state(StageSelection {
+		fetch: fetch_request.is_some(),
+		sanitize: options.sanitize,
+		map: options.map,
+	});
 	let query = ProcessQuery::new(state.clone());
 	let progress = ProcessProgressPublisher::new(progress_tx, state);
 	let context = WorkflowContext {
@@ -30,9 +34,19 @@ pub async fn process_content(options: ProcessContentOptions) -> Result<ProcessCo
 	let (completion_tx, completion_rx) = new_completion_channel();
 	let handle = ProcessContentHandle::new(progress_rx, completion_rx, query);
 	tokio::spawn(async move {
-		let completion = run_pipeline(&context, &options, fetch_request.as_ref())
-			.await
-			.map(|output| process_content_output(&context, &options, output));
+		let completion = match run_pipeline(&context, &options, fetch_request.as_ref()).await {
+			Ok(output) => match process_content_output(&context, &options, output) {
+				Ok(output) => Ok(output),
+				Err(error) => {
+					context.progress.fail_workflow(&error.to_string());
+					Err(error)
+				}
+			},
+			Err(error) => {
+				context.progress.fail_workflow(&error.to_string());
+				Err(error)
+			}
+		};
 		let _ = completion_tx.send(completion);
 	});
 
@@ -55,19 +69,17 @@ fn process_content_output(
 	context: &WorkflowContext,
 	options: &ProcessContentOptions,
 	output: StageOutput,
-) -> ProcessContentOutput {
-	let total_usage = output.total_usage();
-	ProcessContentOutput {
+) -> Result<ProcessContentOutput> {
+	let (stats, items) = context.progress.finish()?;
+	Ok(ProcessContentOutput {
 		destination: context.destination.clone(),
 		manifest_path: context.manifest.is_file().then(|| context.manifest.clone()),
 		content_root: output.artifacts.root,
 		content_map_path: (options.map && context.content_map.is_file())
 			.then(|| context.content_map.clone()),
-		completed_items: output.completed_items,
-		skipped_items: output.skipped_items,
-		failures: output.failures,
-		total_usage,
-	}
+		items,
+		stats,
+	})
 }
 
 fn validate_request(options: &ProcessContentOptions, fetch_request: Option<&FetchRequest>) -> Result<WorkflowLayout> {

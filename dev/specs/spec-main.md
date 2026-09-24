@@ -60,6 +60,19 @@ impl ProcessContentHandle {
 }
 ```
 
+`ProcessQuery` provides authoritative live state independently of the progress receiver. Callers can read stage statistics, inspect items by run-scoped id or stored relative path, list ids by stage status, or request a point-in-time snapshot:
+
+```rust
+impl ProcessQuery {
+    pub fn stats(&self) -> ProgressStats;
+    pub fn item(&self, id: ItemId) -> Option<ItemState>;
+    pub fn item_by_path(&self, relative_path: &str) -> Option<ItemState>;
+    pub fn items(&self) -> Vec<ItemState>;
+    pub fn item_ids(&self, stage: ProcessStage, status: ItemStatus) -> Vec<ItemId>;
+    pub fn snapshot(&self) -> ProcessStateSnapshot;
+}
+```
+
 ## Architecture
 
 ```mermaid
@@ -236,10 +249,8 @@ pub struct ProcessContentOutput {
     pub manifest_path: Option<SPath>,
     pub content_root: SPath,
     pub content_map_path: Option<SPath>,
-    pub completed_items: Vec<ProcessItem>,
-    pub skipped_items: Vec<ProcessItem>,
-    pub failures: Vec<ProcessFailure>,
-    pub total_usage: Option<genai::chat::Usage>,
+    pub items: Vec<ItemState>,
+    pub stats: FinalStats,
 }
 
 pub struct ProcessItem {
@@ -261,9 +272,107 @@ pub enum ProcessStage {
 }
 ```
 
-`ProcessItem` identifies successful or skipped work and may carry model usage. `ProcessFailure` preserves item-level errors without hiding successful work from the same stage. The output's `total_usage` aggregates usage reported by completed AI items.
+The item registry has one run-scoped id per item, reused across its selected stages. `relative_path` is the stored path shared by Fetch, Sanitize, and Map; `origin_path` preserves the discovered path before Fetch formatting. `content_path()` returns the Sanitize artifact path when present, otherwise the Fetch artifact path. Map does not produce a per-item path.
 
-Progress notifications report stage starts and completions, along with completed, skipped, and failed items. Notifications are observational and may be dropped when the bounded channel is full. The query handle exposes authoritative in-memory workflow state.
+```rust
+pub struct ItemState {
+    pub id: ItemId,
+    pub source: String,
+    pub origin_path: String,
+    pub relative_path: String,
+    pub fetch: Option<ItemStageState>,
+    pub sanitize: Option<ItemStageState>,
+    pub map: Option<ItemStageState>,
+}
+
+pub struct ItemStageState {
+    pub status: ItemStatus,
+    pub path: Option<SPath>,
+    pub usage: Option<genai::chat::Usage>,
+    pub error: Option<String>,
+}
+
+pub enum ItemStatus {
+    Pending,
+    Running,
+    Completed,
+    Reused,
+    Skipped,
+    Failed,
+}
+
+pub struct ProcessStateSnapshot {
+    pub stats: ProgressStats,
+    pub items: Vec<ItemState>,
+}
+```
+
+`ProgressStats` is the live view. Selected stages begin as `Pending`; unselected stages are `NotSelected`. A stage moves through `Running` to `Completed`, or becomes `Failed` when a workflow error occurs. Each `StageProgress` includes `total_items`, pending, running, completed, reused, skipped, failed, excluded, usage, and optional start and end times. `registered_items()` sums the item status counters and does not include excluded items.
+
+`total_items` counts registered, selected items, including items that later fail. It remains `None` while web crawl discovery is in progress and is set when the total is known. Items excluded by selection patterns are not registered and do not count toward `total_items`; their count is reported separately in `excluded`. Web URLs fetched only to discover links are also counted as excluded when they are not selected.
+
+```rust
+pub enum StageStatus {
+    NotSelected,
+    Pending,
+    Running,
+    Completed,
+    Failed,
+}
+
+pub struct ProgressStats {
+    pub fetch: StageProgress,
+    pub sanitize: StageProgress,
+    pub map: StageProgress,
+    pub total_usage: Option<genai::chat::Usage>,
+    pub started_epoch_us: i64,
+    pub ended_epoch_us: Option<i64>,
+}
+
+pub struct StageProgress {
+    pub status: StageStatus,
+    pub total_items: Option<usize>,
+    pub pending: usize,
+    pub running: usize,
+    pub completed: usize,
+    pub reused: usize,
+    pub skipped: usize,
+    pub failed: usize,
+    pub excluded: usize,
+    pub usage: Option<genai::chat::Usage>,
+    pub started_epoch_us: Option<i64>,
+    pub ended_epoch_us: Option<i64>,
+}
+
+pub struct FinalStats {
+    pub fetch: Option<StageFinal>,
+    pub sanitize: Option<StageFinal>,
+    pub map: Option<StageFinal>,
+    pub total_usage: Option<genai::chat::Usage>,
+    pub started_epoch_us: i64,
+    pub ended_epoch_us: i64,
+}
+
+pub struct StageFinal {
+    pub total_items: usize,
+    pub completed: usize,
+    pub reused: usize,
+    pub skipped: usize,
+    pub failed: usize,
+    pub excluded: usize,
+    pub usage: Option<genai::chat::Usage>,
+    pub started_epoch_us: i64,
+    pub ended_epoch_us: i64,
+}
+```
+
+`FinalStats` is created only after a successful workflow. Every selected stage must be completed, have no pending or running items, and satisfy `total_items == completed + reused + skipped + failed`; excluded items are not part of this total. Stage and workflow timestamps are epoch microseconds. `StageProgress::duration()`, `ProgressStats::duration()`, `StageFinal::duration()`, and `FinalStats::duration()` provide elapsed durations.
+
+Item statuses describe the outcome at each stage. Fetch uses `Pending` while registered, `Running` while copying or downloading, `Completed` when an artifact is stored, `Reused` for a valid resume artifact, and `Failed` for a read, format, collision, write, or HTTP error. Sanitize uses `Skipped` when it copies an unsupported, oversized, or non-UTF-8 item unchanged. Map uses `Skipped` for an item that cannot be mapped. Sanitize and Map use `Reused` when their resume state is valid. `Failed` retains the item-level error without preventing successful items from being reported.
+
+The output's `stats.total_usage` aggregates usage reported by completed AI items. Per-stage usage is accumulated alongside it.
+
+Progress notifications carry `ProgressUpdate { seq, event, stats }`. `ProgressEvent` reports stage starts and completions, item registration and status changes, exclusions, and workflow completion or failure. The sequence increases for every recorded update, so gaps reveal dropped notifications. Each update's statistics snapshot is captured under the same lock as its event. Notifications are observational and may be dropped when the bounded channel is full; `ProcessQuery` and `ProcessStateSnapshot` remain authoritative and expose the live statistics and item registry.
 
 ## Content-map contract
 
@@ -319,6 +428,8 @@ The crate exposes a `Result<T>` alias and a structured `Error` enum. Workflow er
 - Dedicated I/O, filesystem, HTTP, and HTTP header conversion variants for external failures.
 
 Expected workflow failures are returned as errors or retained as item-level failures. Provider errors, missing response tags, and malformed Map responses encountered during per-item AI processing remain item-level failures, preserving successful work from the same stage. Background task join failures are returned as workflow errors. Production paths do not panic for expected workflow failures.
+
+When a workflow returns an error, `wait_output` returns the error rather than a `ProcessContentOutput`. A retained `ProcessQuery` still exposes partial statistics and item states. Any running stage is marked `Failed`, its end time and the workflow end time are recorded, and a `WorkflowFailed` update is attempted.
 
 ## Implementation scope
 

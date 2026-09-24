@@ -227,6 +227,7 @@ pub(crate) struct LocalFetchDiscovery {
 	pub(crate) source: String,
 	pub(crate) source_path: SPath,
 	pub(crate) items: Vec<LocalFetchItem>,
+	pub(crate) excluded: usize,
 }
 
 #[derive(Debug, Clone)]

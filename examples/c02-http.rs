@@ -1,4 +1,4 @@
-use zmapr::{FetchFormat, ProcessContentOptions, process_content};
+use zmapr::{FetchFormat, ItemStatus, ProcessContentOptions, process_content};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -12,9 +12,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 	let output = handle.wait_output().await?;
 
 	println!("Fetched content into {}", output.content_root);
-	println!("Completed items: {}", output.completed_items.len());
+	println!(
+		"Completed items: {}",
+		output.stats.fetch.as_ref().map_or(0, |stats| stats.completed)
+	);
 
-	for item in &output.completed_items {
+	for item in output
+		.items
+		.iter()
+		.filter(|item| item.fetch.as_ref().is_some_and(|state| state.status == ItemStatus::Completed))
+	{
 		println!(" - {}", item.source);
 	}
 

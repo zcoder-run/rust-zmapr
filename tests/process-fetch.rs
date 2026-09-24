@@ -2,7 +2,10 @@ use serde_json::json;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
-use zmapr::{Error, FetchFormat, ProcessContentOptions, ProcessProgress, ProcessStage, process_content};
+use zmapr::{
+	Error, FetchFormat, ItemState, ItemStatus, ProcessContentOptions, ProcessStage, ProgressEvent, StageStatus,
+	process_content,
+};
 
 type Result<T> = core::result::Result<T, Box<dyn std::error::Error>>; // For tests.
 
@@ -20,19 +23,23 @@ async fn test_process_fetch_local_file_returns_output_and_progress() -> Result<(
 	let output = handle.wait_output().await?;
 
 	// -- Check
-	assert_eq!(output.completed_items.len(), 1);
-	assert!(output.skipped_items.is_empty());
-	assert!(output.failures.is_empty());
+	assert_eq!(output.stats.fetch.as_ref().ok_or("expected Fetch stats")?.completed, 1);
+	assert_eq!(output.stats.fetch.as_ref().ok_or("expected Fetch stats")?.skipped, 0);
+	assert_eq!(output.stats.fetch.as_ref().ok_or("expected Fetch stats")?.failed, 0);
 
 	let item = output
-		.completed_items
+		.items
 		.first()
 		.ok_or("Fetch output should contain one completed item")?;
-	assert_eq!(item.source, "guide.md");
-	assert_eq!(item.stage, ProcessStage::Fetch);
+	assert_eq!(item.relative_path, "guide.md");
+	assert_eq!(
+		item.fetch.as_ref().map(|state| state.status),
+		Some(ItemStatus::Completed)
+	);
 
 	let expected_fetch_root = destination.join(".tmp-zmapr").join("01-fetch");
-	let output_path = item.output_path.as_ref().ok_or("Fetch should publish an output path")?;
+	let fetch_state = item.fetch.as_ref().ok_or("Fetch should have Fetch state")?;
+	let output_path = fetch_state.path.as_ref().ok_or("Fetch should publish an output path")?;
 	let output_path: &Path = output_path.as_ref();
 	assert_eq!(output_path, expected_fetch_root.join("guide.md").as_path());
 	assert_eq!(fs::read(output_path)?, b"# Guide\n".to_vec());
@@ -66,38 +73,37 @@ async fn test_process_fetch_copies_directory_artifacts_and_publishes_manifest() 
 
 	// -- Exec
 	let handle = process_content(local_fetch_options(&source_root, &destination, false)).await?;
+	let query = handle.query();
 	let output = handle.wait_output().await?;
 
 	// -- Check
-	assert_eq!(output.completed_items.len(), 2);
-	assert!(output.skipped_items.is_empty());
-	assert!(output.failures.is_empty());
+	let stats = query.stats();
+	assert_eq!(output.stats.fetch.as_ref().ok_or("expected Fetch stats")?.failed, 0);
+	assert_eq!(stats.fetch.total_items, Some(2));
+	assert_eq!(stats.fetch.completed, 2);
+	assert_eq!(stats.fetch.status, StageStatus::Completed);
 
-	let sources = output
-		.completed_items
-		.iter()
-		.map(|item| item.source.as_str())
-		.collect::<Vec<_>>();
+	let sources = relative_paths(&output.items, ProcessStage::Fetch, ItemStatus::Completed);
 	assert_eq!(sources, vec!["a.txt", "nested/b.txt"]);
 
 	let first = output
-		.completed_items
+		.items
 		.first()
 		.ok_or("copied Fetch output should contain the first item")?;
-	let first_path = first
-		.output_path
+	let first_path = first.fetch
 		.as_ref()
+		.and_then(|state| state.path.as_ref())
 		.ok_or("copied Fetch item should have an output path")?;
 	assert!(first_path.is_file());
 	assert_eq!(fs::read(first_path.as_std_path())?, b"alpha\n".to_vec());
 
 	let second = output
-		.completed_items
+		.items
 		.get(1)
 		.ok_or("copied Fetch output should contain the second item")?;
-	let second_path = second
-		.output_path
+	let second_path = second.fetch
 		.as_ref()
+		.and_then(|state| state.path.as_ref())
 		.ok_or("copied Fetch item should have an output path")?;
 	assert!(second_path.is_file());
 	assert_eq!(fs::read(second_path.as_std_path())?, b"beta\n".to_vec());
@@ -118,6 +124,33 @@ async fn test_process_fetch_copies_directory_artifacts_and_publishes_manifest() 
 }
 
 #[tokio::test]
+async fn test_process_fetch_local_excluded_count() -> Result<()> {
+	// -- Setup & Fixtures
+	let root = fixture_root("test_process_fetch_local_excluded_count")?;
+	let source_root = root.join("source");
+	fs::create_dir_all(&source_root)?;
+	fs::write(source_root.join("keep.txt"), b"keep\n")?;
+	fs::write(source_root.join("excluded.txt"), b"excluded\n")?;
+	let destination = root.join("destination");
+
+	// -- Exec
+	let handle = process_content(
+		local_fetch_options(&source_root, &destination, false).with_exclude(["excluded.txt"]),
+	)
+	.await?;
+	let query = handle.query();
+	let _output = handle.wait_output().await?;
+
+	// -- Check
+	let stats = query.stats();
+	assert_eq!(stats.fetch.excluded, 1);
+	assert_eq!(stats.fetch.total_items, Some(1));
+	assert_eq!(stats.fetch.completed, 1);
+
+	Ok(())
+}
+
+#[tokio::test]
 async fn test_process_fetch_resume_reuses_and_rebuilds_state() -> Result<()> {
 	// -- Setup & Fixtures
 	let root = fixture_root("test_process_fetch_resume_reuses_and_rebuilds_state")?;
@@ -130,17 +163,16 @@ async fn test_process_fetch_resume_reuses_and_rebuilds_state() -> Result<()> {
 	let first_output = first_handle.wait_output().await?;
 
 	// -- Check
-	assert_eq!(first_output.completed_items.len(), 1);
-	assert!(first_output.skipped_items.is_empty());
-	assert!(first_output.failures.is_empty());
+	assert_eq!(first_output.stats.fetch.as_ref().ok_or("expected Fetch stats")?.completed, 1);
+	assert_eq!(first_output.stats.fetch.as_ref().ok_or("expected Fetch stats")?.failed, 0);
 
 	let first_item = first_output
-		.completed_items
+		.items
 		.first()
 		.ok_or("initial Fetch should contain one item")?;
-	let artifact_path = first_item
-		.output_path
+	let artifact_path = first_item.fetch
 		.as_ref()
+		.and_then(|state| state.path.as_ref())
 		.ok_or("initial Fetch item should have an artifact path")?
 		.as_std_path()
 		.to_path_buf();
@@ -154,25 +186,25 @@ async fn test_process_fetch_resume_reuses_and_rebuilds_state() -> Result<()> {
 	let original_hash = manifest_hash(&manifest_path)?;
 
 	let second_handle = process_content(local_fetch_options(&source_path, &destination, true)).await?;
+	let second_query = second_handle.query();
 	let second_output = second_handle.wait_output().await?;
-	assert!(second_output.completed_items.is_empty());
-	assert_eq!(second_output.skipped_items.len(), 1);
+	assert_eq!(second_output.stats.fetch.as_ref().ok_or("expected Fetch stats")?.reused, 1);
 	assert_eq!(fs::read(&manifest_path)?, original_manifest);
+	assert_eq!(second_query.stats().fetch.reused, 1);
+	assert_eq!(second_query.stats().fetch.completed, 0);
 
 	fs::remove_file(&artifact_path)?;
 
 	let third_handle = process_content(local_fetch_options(&source_path, &destination, true)).await?;
 	let third_output = third_handle.wait_output().await?;
-	assert_eq!(third_output.completed_items.len(), 1);
-	assert!(third_output.skipped_items.is_empty());
+	assert_eq!(third_output.stats.fetch.as_ref().ok_or("expected Fetch stats")?.completed, 1);
 	assert!(artifact_path.is_file());
 
 	fs::write(&source_path, b"changed\n")?;
 
 	let fourth_handle = process_content(local_fetch_options(&source_path, &destination, true)).await?;
 	let fourth_output = fourth_handle.wait_output().await?;
-	assert_eq!(fourth_output.completed_items.len(), 1);
-	assert!(fourth_output.skipped_items.is_empty());
+	assert_eq!(fourth_output.stats.fetch.as_ref().ok_or("expected Fetch stats")?.completed, 1);
 	let changed_hash = manifest_hash(&manifest_path)?;
 	assert_ne!(original_hash, changed_hash);
 
@@ -190,12 +222,13 @@ async fn test_process_fetch_resume_rebuilds_legacy_cache_layout() -> Result<()> 
 	let first_handle = process_content(local_fetch_options(&source_path, &destination, false)).await?;
 	let first_output = first_handle.wait_output().await?;
 	let first_item = first_output
-		.completed_items
+		.items
 		.first()
 		.ok_or("initial Fetch should contain one item")?;
 	let artifact_path = first_item
-		.output_path
+		.fetch
 		.as_ref()
+		.and_then(|state| state.path.as_ref())
 		.ok_or("initial Fetch item should have an artifact path")?
 		.as_std_path()
 		.to_path_buf();
@@ -221,16 +254,19 @@ async fn test_process_fetch_resume_rebuilds_legacy_cache_layout() -> Result<()> 
 	let second_output = second_handle.wait_output().await?;
 
 	// -- Check
-	assert_eq!(second_output.completed_items.len(), 1);
-	assert!(second_output.skipped_items.is_empty());
+	let second_fetch_stats = second_output.stats.fetch.as_ref().ok_or("expected Fetch stats")?;
+	assert_eq!(second_fetch_stats.completed, 1);
+	assert_eq!(second_fetch_stats.reused, 0);
+	assert_eq!(second_fetch_stats.skipped, 0);
+	assert_eq!(second_fetch_stats.failed, 0);
 
 	let item = second_output
-		.completed_items
+		.items
 		.first()
 		.ok_or("Fetch should rebuild the artifact in the numbered cache")?;
-	let output_path = item
-		.output_path
+	let output_path = item.fetch
 		.as_ref()
+		.and_then(|state| state.path.as_ref())
 		.ok_or("rebuilt Fetch item should have an output path")?;
 	let expected_artifact_path = destination.join(".tmp-zmapr").join("01-fetch").join("source.txt");
 	let output_path: &Path = output_path.as_ref();
@@ -315,21 +351,24 @@ async fn test_process_fetch_binary_file_hashes_and_resumes() -> Result<()> {
 	let second_output = second_handle.wait_output().await?;
 
 	// -- Check
-	assert_eq!(first_output.completed_items.len(), 1);
-	assert!(first_output.failures.is_empty());
+	assert_eq!(first_output.stats.fetch.as_ref().ok_or("expected Fetch stats")?.completed, 1);
+	assert_eq!(first_output.stats.fetch.as_ref().ok_or("expected Fetch stats")?.failed, 0);
 	let item = first_output
-		.completed_items
+		.items
 		.first()
 		.ok_or("Fetch should complete the binary file")?;
-	let artifact_path = item.output_path.as_ref().ok_or("Fetch should copy the binary file")?;
+	let artifact_path = item
+		.fetch
+		.as_ref()
+		.and_then(|state| state.path.as_ref())
+		.ok_or("Fetch should copy the binary file")?;
 	assert_eq!(fs::read(artifact_path.as_std_path())?, contents);
 	assert_eq!(
 		actual_hash,
 		bs58::encode(blake3::hash(&contents).as_bytes()).into_string()
 	);
-	assert!(second_output.completed_items.is_empty());
-	assert_eq!(second_output.skipped_items.len(), 1);
-	assert!(second_output.failures.is_empty());
+	assert_eq!(second_output.stats.fetch.as_ref().ok_or("expected Fetch stats")?.reused, 1);
+	assert_eq!(second_output.stats.fetch.as_ref().ok_or("expected Fetch stats")?.failed, 0);
 
 	Ok(())
 }
@@ -429,6 +468,7 @@ async fn test_process_fetch_web_crawls_and_reports_progress() -> Result<()> {
 
 	// -- Exec
 	let mut handle = process_content(options).await?;
+	let query = handle.query();
 	let mut progress_rx = handle.take_progress_rx().ok_or("Fetch should provide a progress receiver")?;
 
 	let progress_task = tokio::spawn(async move {
@@ -443,14 +483,18 @@ async fn test_process_fetch_web_crawls_and_reports_progress() -> Result<()> {
 	let progress_events = progress_task.await?;
 
 	// -- Check
-	assert_eq!(output.completed_items.len(), 4);
-	assert!(output.failures.is_empty());
+	let stats = query.stats();
+	assert_eq!(output.stats.fetch.as_ref().ok_or("expected Fetch stats")?.completed, 4);
+	assert_eq!(output.stats.fetch.as_ref().ok_or("expected Fetch stats")?.failed, 0);
+	assert_eq!(stats.fetch.total_items, Some(4));
+	assert_eq!(stats.fetch.completed, 4);
 
-	let completed_sources = output
-		.completed_items
-		.iter()
-		.map(|item| item.source.as_str())
-		.collect::<Vec<_>>();
+	let page1 = query.item_by_path("page1.md").ok_or("Fetch registry should contain page1.md")?;
+	let page1_fetch = page1.fetch.as_ref().ok_or("page1.md should have Fetch state")?;
+	assert_eq!(page1_fetch.status, ItemStatus::Completed);
+	assert_eq!(page1.origin_path, "page1.html");
+
+	let completed_sources = relative_paths(&output.items, ProcessStage::Fetch, ItemStatus::Completed);
 	assert_eq!(
 		completed_sources,
 		vec!["index.md", "page1.md", "page2.md", "sub/page3.md"]
@@ -470,25 +514,34 @@ async fn test_process_fetch_web_crawls_and_reports_progress() -> Result<()> {
 		Some(true)
 	);
 
-	let has_stage_started = progress_events.iter().any(|event| {
+	let has_stage_started = progress_events.iter().any(|update| {
 		matches!(
-			event,
-			ProcessProgress::StageStarted {
+			&update.event,
+			ProgressEvent::StageStarted {
 				stage: ProcessStage::Fetch
 			}
 		)
 	});
-	let has_stage_completed = progress_events.iter().any(|event| {
+	let has_stage_completed = progress_events.iter().any(|update| {
 		matches!(
-			event,
-			ProcessProgress::StageCompleted {
+			&update.event,
+			ProgressEvent::StageCompleted {
 				stage: ProcessStage::Fetch
 			}
 		)
 	});
 	let item_completed_count = progress_events
 		.iter()
-		.filter(|event| matches!(event, ProcessProgress::ItemCompleted { .. }))
+		.filter(|update| {
+			matches!(
+				&update.event,
+				ProgressEvent::ItemStatusChanged {
+					stage: ProcessStage::Fetch,
+					status: ItemStatus::Completed,
+					..
+				}
+			)
+		})
 		.count();
 
 	assert!(has_stage_started);
@@ -535,14 +588,10 @@ async fn test_process_fetch_web_respects_max_depth() -> Result<()> {
 	let output = handle.wait_output().await?;
 
 	// -- Check
-	assert_eq!(output.completed_items.len(), 2);
-	assert!(output.failures.is_empty());
+	assert_eq!(output.stats.fetch.as_ref().ok_or("expected Fetch stats")?.completed, 2);
+	assert_eq!(output.stats.fetch.as_ref().ok_or("expected Fetch stats")?.failed, 0);
 
-	let completed_sources = output
-		.completed_items
-		.iter()
-		.map(|item| item.source.as_str())
-		.collect::<Vec<_>>();
+	let completed_sources = relative_paths(&output.items, ProcessStage::Fetch, ItemStatus::Completed);
 	assert_eq!(completed_sources, vec!["index.md", "level1.md"]);
 
 	let fetch_dir = destination.join(".tmp-zmapr").join("01-fetch");
@@ -576,16 +625,22 @@ async fn test_process_fetch_web_records_failures_for_broken_links() -> Result<()
 
 	// -- Exec
 	let handle = process_content(options).await?;
+	let query = handle.query();
 	let output = handle.wait_output().await?;
 
 	// -- Check
-	assert_eq!(output.completed_items.len(), 1);
-	assert_eq!(output.failures.len(), 1);
+	let stats = query.stats();
+	assert_eq!(output.stats.fetch.as_ref().ok_or("expected Fetch stats")?.completed, 1);
+	assert_eq!(output.stats.fetch.as_ref().ok_or("expected Fetch stats")?.failed, 1);
+	assert_eq!(stats.fetch.failed, 1);
 
-	let failure = output.failures.first().ok_or("Output should contain one failure")?;
-	assert_eq!(failure.item.source, "broken.html");
-	assert_eq!(failure.item.stage, ProcessStage::Fetch);
-	assert!(failure.message.contains("404"));
+	let broken = query
+		.item_by_path("broken.html")
+		.ok_or("Fetch registry should contain the failed broken.html item")?;
+	assert_eq!(broken.relative_path, "broken.html");
+	let broken_fetch = broken.fetch.as_ref().ok_or("broken.html should have Fetch state")?;
+	assert_eq!(broken_fetch.status, ItemStatus::Failed);
+	assert!(broken_fetch.error.as_deref().is_some_and(|message| message.contains("404")));
 
 	let manifest_path = output.manifest_path.as_ref().ok_or("Output should include a manifest")?;
 	let manifest: serde_json::Value = serde_json::from_str(&fs::read_to_string(manifest_path.as_std_path())?)?;
@@ -625,14 +680,10 @@ async fn test_process_fetch_web_llms_discovery_and_fetch() -> Result<()> {
 	let output = handle.wait_output().await?;
 
 	// -- Check
-	assert_eq!(output.completed_items.len(), 3);
-	assert!(output.failures.is_empty());
+	assert_eq!(output.stats.fetch.as_ref().ok_or("expected Fetch stats")?.completed, 3);
+	assert_eq!(output.stats.fetch.as_ref().ok_or("expected Fetch stats")?.failed, 0);
 
-	let completed_sources = output
-		.completed_items
-		.iter()
-		.map(|item| item.source.as_str())
-		.collect::<Vec<_>>();
+	let completed_sources = relative_paths(&output.items, ProcessStage::Fetch, ItemStatus::Completed);
 	assert_eq!(completed_sources, vec!["concepts/arch.md", "intro.md", "llms.txt"]);
 
 	let fetch_dir = destination.join(".tmp-zmapr").join("01-fetch");
@@ -688,14 +739,10 @@ async fn test_process_fetch_web_llms_fallback_on_missing() -> Result<()> {
 	let output = handle.wait_output().await?;
 
 	// -- Check
-	assert_eq!(output.completed_items.len(), 2);
-	assert!(output.failures.is_empty());
+	assert_eq!(output.stats.fetch.as_ref().ok_or("expected Fetch stats")?.completed, 2);
+	assert_eq!(output.stats.fetch.as_ref().ok_or("expected Fetch stats")?.failed, 0);
 
-	let completed_sources = output
-		.completed_items
-		.iter()
-		.map(|item| item.source.as_str())
-		.collect::<Vec<_>>();
+	let completed_sources = relative_paths(&output.items, ProcessStage::Fetch, ItemStatus::Completed);
 	assert_eq!(completed_sources, vec!["index.md", "page1.md"]);
 
 	let fetch_dir = destination.join(".tmp-zmapr").join("01-fetch");
@@ -745,14 +792,10 @@ async fn test_process_fetch_web_llms_fallback_on_empty() -> Result<()> {
 	let output = handle.wait_output().await?;
 
 	// -- Check
-	assert_eq!(output.completed_items.len(), 2);
-	assert!(output.failures.is_empty());
+	assert_eq!(output.stats.fetch.as_ref().ok_or("expected Fetch stats")?.completed, 2);
+	assert_eq!(output.stats.fetch.as_ref().ok_or("expected Fetch stats")?.failed, 0);
 
-	let completed_sources = output
-		.completed_items
-		.iter()
-		.map(|item| item.source.as_str())
-		.collect::<Vec<_>>();
+	let completed_sources = relative_paths(&output.items, ProcessStage::Fetch, ItemStatus::Completed);
 	assert_eq!(completed_sources, vec!["index.md", "page1.md"]);
 
 	let fetch_dir = destination.join(".tmp-zmapr").join("01-fetch");
@@ -798,14 +841,10 @@ async fn test_process_fetch_web_extensionless_path_defaults_html() -> Result<()>
 	let output = handle.wait_output().await?;
 
 	// -- Check
-	assert_eq!(output.completed_items.len(), 3);
-	assert!(output.failures.is_empty());
+	assert_eq!(output.stats.fetch.as_ref().ok_or("expected Fetch stats")?.completed, 3);
+	assert_eq!(output.stats.fetch.as_ref().ok_or("expected Fetch stats")?.failed, 0);
 
-	let completed_sources = output
-		.completed_items
-		.iter()
-		.map(|item| item.source.as_str())
-		.collect::<Vec<_>>();
+	let completed_sources = relative_paths(&output.items, ProcessStage::Fetch, ItemStatus::Completed);
 	assert_eq!(completed_sources, vec!["concepts/arch.md", "index.md", "intro.md"]);
 
 	let fetch_dir = destination.join(".tmp-zmapr").join("01-fetch");
@@ -854,11 +893,12 @@ async fn test_process_fetch_local_html_formats_and_path_collisions() -> Result<(
 	let slim_output = slim_handle.wait_output().await?;
 
 	// -- Check
-	assert_eq!(markdown_output.failures.len(), 2);
-	assert!(markdown_output.failures.iter().all(|failure| {
-		failure
-			.message
-			.contains("multiple input artifacts resolve to fetch path page.md")
+	assert_eq!(markdown_output.stats.fetch.as_ref().ok_or("expected Fetch stats")?.failed, 2);
+	assert!(markdown_output.items.iter().filter_map(|item| item.fetch.as_ref()).all(|state| {
+		state.status != ItemStatus::Failed
+			|| state.error.as_deref().is_some_and(|message| {
+				message.contains("multiple input artifacts resolve to fetch path page.md")
+			})
 	}));
 	assert!(
 		!markdown_destination
@@ -868,13 +908,53 @@ async fn test_process_fetch_local_html_formats_and_path_collisions() -> Result<(
 			.exists()
 	);
 
-	assert!(raw_output.failures.is_empty());
+	assert_eq!(raw_output.stats.fetch.as_ref().ok_or("expected Fetch stats")?.failed, 0);
 	assert!(raw_destination.join(".tmp-zmapr").join("01-fetch").join("page.html").is_file());
 
-	assert!(slim_output.failures.is_empty());
+	assert_eq!(slim_output.stats.fetch.as_ref().ok_or("expected Fetch stats")?.failed, 0);
 	let slim_path = slim_destination.join(".tmp-zmapr").join("01-fetch").join("page.html");
 	assert!(slim_path.is_file());
 	assert!(fs::read_to_string(slim_path)?.contains("Page"));
+
+	Ok(())
+}
+
+#[tokio::test]
+async fn test_process_fetch_final_stats_match_query() -> Result<()> {
+	// -- Setup & Fixtures
+	let root = fixture_root("test_process_fetch_final_stats_match_query")?;
+	let source_root = root.join("source");
+	fs::create_dir_all(&source_root)?;
+	fs::write(source_root.join("a.txt"), b"a\n")?;
+	fs::write(source_root.join("b.txt"), b"b\n")?;
+	let destination = root.join("destination");
+
+	// -- Exec
+	let mut handle = process_content(local_fetch_options(&source_root, &destination, false)).await?;
+	let query = handle.query();
+	let mut progress_rx = handle.take_progress_rx().ok_or("Fetch should provide a progress receiver")?;
+	let progress_task = tokio::spawn(async move {
+		let mut updates = Vec::new();
+		while let Ok(update) = progress_rx.recv().await {
+			updates.push(update);
+		}
+		updates
+	});
+	let output = handle.wait_output().await?;
+	let updates = progress_task.await?;
+
+	// -- Check
+	let fetch_stats = output.stats.fetch.as_ref().ok_or("expected final Fetch stats")?;
+	assert_eq!(fetch_stats.total_items, 2);
+	assert!(output.stats.sanitize.is_none());
+	assert!(output.stats.map.is_none());
+	assert!(output.stats.duration() >= std::time::Duration::ZERO);
+	assert_eq!(output.items.len(), query.items().len());
+	assert!(updates.windows(2).all(|pair| pair[0].seq < pair[1].seq));
+	assert!(matches!(
+		updates.last().map(|update| &update.event),
+		Some(ProgressEvent::WorkflowCompleted)
+	));
 
 	Ok(())
 }
@@ -949,6 +1029,16 @@ fn manifest_hash(path: &Path) -> Result<String> {
 
 fn path_text(path: &Path) -> String {
 	path.to_string_lossy().replace('\\', "/")
+}
+
+fn relative_paths(items: &[ItemState], stage: ProcessStage, status: ItemStatus) -> Vec<String> {
+	let mut paths = items
+		.iter()
+		.filter(|item| item.stage(stage).is_some_and(|state| state.status == status))
+		.map(|item| item.relative_path.clone())
+		.collect::<Vec<_>>();
+	paths.sort();
+	paths
 }
 
 // endregion: --- Support

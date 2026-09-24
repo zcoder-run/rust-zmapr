@@ -3,8 +3,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use zmapr::{
-	ContentMapDocument, MaprAiClient, MaprAiResponse, MaprAiSelector, ProcessContentOptions,
-	ProcessProgress, ProcessStage, SanitizePrompt, process_content, set_active_ai_selector,
+	ContentMapDocument, ItemState, ItemStatus, MaprAiClient, MaprAiResponse, MaprAiSelector,
+	ProcessContentOptions, ProcessStage, ProgressEvent, SanitizePrompt, StageStatus, process_content,
+	set_active_ai_selector,
 };
 
 type Result<T> = core::result::Result<T, Box<dyn std::error::Error>>;
@@ -30,6 +31,7 @@ async fn test_process_sanitize_cleans_text_and_copies_ineligible_items() -> Resu
 
 	// -- Exec
 	let mut handle = process_content(options).await?;
+	let query = handle.query();
 	let mut progress_rx = handle.take_progress_rx().ok_or("expected progress receiver")?;
 	let progress_task = tokio::spawn(async move {
 		let mut events = Vec::new();
@@ -42,7 +44,24 @@ async fn test_process_sanitize_cleans_text_and_copies_ineligible_items() -> Resu
 	let progress_events = progress_task.await?;
 
 	// -- Check
-	assert!(output.failures.is_empty());
+	assert_eq!(output.stats.sanitize.as_ref().ok_or("expected Sanitize stats")?.failed, 0);
+	let stats = query.stats();
+	assert_eq!(stats.sanitize.completed, 1);
+	assert_eq!(stats.sanitize.skipped, 1);
+	assert_eq!(stats.sanitize.total_items, Some(2));
+	assert_eq!(stats.sanitize.status, StageStatus::Completed);
+	let item = query.item_by_path("intro.md").ok_or("expected intro.md item")?;
+	let sanitize_state = item.sanitize.as_ref().ok_or("expected Sanitize state")?;
+	assert_eq!(sanitize_state.status, ItemStatus::Completed);
+	assert!(sanitize_state.usage.is_some());
+	assert_eq!(
+		item.content_path().ok_or("expected sanitized content path")?.as_std_path(),
+		destination
+			.join(".tmp-zmapr")
+			.join("02-sanitize")
+			.join("intro.md")
+			.as_path()
+	);
 	let sanitize_root = destination.join(".tmp-zmapr").join("02-sanitize");
 	assert!(sanitize_root.join("intro.md").is_file());
 	assert_eq!(
@@ -52,28 +71,42 @@ async fn test_process_sanitize_cleans_text_and_copies_ineligible_items() -> Resu
 	assert_eq!(fs::read(sanitize_root.join("image.png"))?, b"image bytes");
 
 	let completed_item = output
-		.completed_items
+		.items
 		.iter()
-		.find(|item| item.stage == ProcessStage::Sanitize && item.source == "intro.md")
+		.find(|item| {
+			item.relative_path == "intro.md"
+				&& item
+					.sanitize
+					.as_ref()
+					.is_some_and(|state| state.status == ItemStatus::Completed)
+		})
 		.ok_or("expected completed Sanitize item")?;
-	assert!(completed_item.usage.is_some());
+	let completed_sanitize = completed_item.sanitize.as_ref().ok_or("expected Sanitize state")?;
+	assert!(completed_sanitize.usage.is_some());
 	assert_eq!(
-		completed_item.output_path.as_ref().map(|path| path.as_std_path()),
+		completed_sanitize.path.as_ref().map(|path| path.as_std_path()),
 		Some(sanitize_root.join("intro.md").as_path())
 	);
 
 	let skipped_item = output
-		.skipped_items
+		.items
 		.iter()
-		.find(|item| item.stage == ProcessStage::Sanitize && item.source == "image.png")
+		.find(|item| {
+			item.relative_path == "image.png"
+				&& item
+					.sanitize
+					.as_ref()
+					.is_some_and(|state| state.status == ItemStatus::Skipped)
+		})
 		.ok_or("expected skipped image item")?;
+	let skipped_sanitize = skipped_item.sanitize.as_ref().ok_or("expected Sanitize state")?;
 	assert_eq!(
-		skipped_item.output_path.as_ref().map(|path| path.as_std_path()),
+		skipped_sanitize.path.as_ref().map(|path| path.as_std_path()),
 		Some(sanitize_root.join("image.png").as_path())
 	);
 	assert!(progress_events.iter().any(|event| matches!(
-		event,
-		ProcessProgress::StageCompleted {
+		&event.event,
+		ProgressEvent::StageCompleted {
 			stage: ProcessStage::Sanitize
 		}
 	)));
@@ -104,7 +137,7 @@ async fn test_process_sanitize_map_uses_sanitized_artifacts() -> Result<()> {
 	let output = handle.wait_output().await?;
 
 	// -- Check
-	assert!(output.failures.is_empty());
+	assert_eq!(output.stats.sanitize.as_ref().ok_or("expected Sanitize stats")?.failed, 0);
 	assert_eq!(
 		output.content_root.as_std_path(),
 		destination.join(".tmp-zmapr").join("02-sanitize").as_path()
@@ -144,7 +177,7 @@ async fn test_process_sanitize_custom_instructions_replace_built_in_prompt() -> 
 	let output = handle.wait_output().await?;
 
 	// -- Check
-	assert!(output.failures.is_empty());
+	assert_eq!(output.stats.sanitize.as_ref().ok_or("expected Sanitize stats")?.failed, 0);
 	assert!(destination
 		.join(".tmp-zmapr")
 		.join("02-sanitize")
@@ -185,12 +218,23 @@ async fn test_process_sanitize_missing_output_tags_records_failure_and_completes
 	let progress_events = progress_task.await?;
 
 	// -- Check
-	assert_eq!(output.failures.len(), 1);
-	assert_eq!(output.failures[0].item.stage, ProcessStage::Sanitize);
-	assert!(output.failures[0].message.contains("SANITIZED_CONTENT"));
+	assert_eq!(output.stats.sanitize.as_ref().ok_or("expected Sanitize stats")?.failed, 1);
+	let failed_item = output
+		.items
+		.iter()
+		.find(|item| item.relative_path == "guide.md")
+		.ok_or("expected failed Sanitize item")?;
+	let failed_sanitize = failed_item.sanitize.as_ref().ok_or("expected Sanitize state")?;
+	assert_eq!(failed_sanitize.status, ItemStatus::Failed);
+	assert!(
+		failed_sanitize
+			.error
+			.as_deref()
+			.is_some_and(|message| message.contains("SANITIZED_CONTENT"))
+	);
 	assert!(progress_events.iter().any(|event| matches!(
-		event,
-		ProcessProgress::StageCompleted {
+		&event.event,
+		ProgressEvent::StageCompleted {
 			stage: ProcessStage::Sanitize
 		}
 	)));
@@ -221,59 +265,28 @@ async fn test_process_sanitize_resume_reuses_unchanged_items_and_invalidates_cha
 	let first_handle = process_content(sanitize_options(&destination, &source_root, "stub-model", None)).await?;
 	let first_output = first_handle.wait_output().await?;
 	let second_handle = process_content(sanitize_options(&destination, &source_root, "stub-model", None)).await?;
+	let second_query = second_handle.query();
 	let second_output = second_handle.wait_output().await?;
 
 	// -- Check
-	assert_eq!(
-		first_output
-			.completed_items
-			.iter()
-			.filter(|item| item.stage == ProcessStage::Sanitize)
-			.count(),
-		2
-	);
-	assert_eq!(
-		second_output
-			.completed_items
-			.iter()
-			.filter(|item| item.stage == ProcessStage::Sanitize)
-			.count(),
-		0
-	);
-	assert_eq!(second_output.total_usage, None);
-	assert_eq!(
-		second_output
-			.skipped_items
-			.iter()
-			.filter(|item| item.stage == ProcessStage::Sanitize)
-			.count(),
-		2
-	);
+	assert_eq!(second_query.stats().sanitize.reused, 2);
+	assert_eq!(first_output.stats.sanitize.as_ref().ok_or("expected Sanitize stats")?.completed, 2);
+	assert_eq!(second_output.stats.sanitize.as_ref().ok_or("expected Sanitize stats")?.completed, 0);
+	assert_eq!(second_output.stats.total_usage, None);
+	assert_eq!(second_output.stats.sanitize.as_ref().ok_or("expected Sanitize stats")?.reused, 2);
 
 	// -- Exec & Check
 	fs::write(source_root.join("intro.md"), b"# Intro\nUpdated content.")?;
 	let changed_source_handle =
 		process_content(sanitize_options(&destination, &source_root, "stub-model", None)).await?;
 	let changed_source_output = changed_source_handle.wait_output().await?;
-	let completed_sources = changed_source_output
-		.completed_items
-		.iter()
-		.filter(|item| item.stage == ProcessStage::Sanitize)
-		.map(|item| item.source.as_str())
-		.collect::<Vec<_>>();
+	let completed_sources = relative_paths(&changed_source_output.items, ProcessStage::Sanitize, ItemStatus::Completed);
 	assert_eq!(completed_sources, vec!["intro.md"]);
 
 	let changed_model_handle =
 		process_content(sanitize_options(&destination, &source_root, "stub-model-v2", None)).await?;
 	let changed_model_output = changed_model_handle.wait_output().await?;
-	assert_eq!(
-		changed_model_output
-			.completed_items
-			.iter()
-			.filter(|item| item.stage == ProcessStage::Sanitize)
-			.count(),
-		2
-	);
+	assert_eq!(changed_model_output.stats.sanitize.as_ref().ok_or("expected Sanitize stats")?.completed, 2);
 
 	let custom_prompt = Some(SanitizePrompt::content("CUSTOM RULES"));
 	let changed_prompt_handle = process_content(sanitize_options(
@@ -284,14 +297,7 @@ async fn test_process_sanitize_resume_reuses_unchanged_items_and_invalidates_cha
 	))
 	.await?;
 	let changed_prompt_output = changed_prompt_handle.wait_output().await?;
-	assert_eq!(
-		changed_prompt_output
-			.completed_items
-			.iter()
-			.filter(|item| item.stage == ProcessStage::Sanitize)
-			.count(),
-		2
-	);
+	assert_eq!(changed_prompt_output.stats.sanitize.as_ref().ok_or("expected Sanitize stats")?.completed, 2);
 
 	fs::remove_file(
 		destination
@@ -307,12 +313,7 @@ async fn test_process_sanitize_resume_reuses_unchanged_items_and_invalidates_cha
 	))
 	.await?;
 	let missing_output = missing_output_handle.wait_output().await?;
-	let completed_sources = missing_output
-		.completed_items
-		.iter()
-		.filter(|item| item.stage == ProcessStage::Sanitize)
-		.map(|item| item.source.as_str())
-		.collect::<Vec<_>>();
+	let completed_sources = relative_paths(&missing_output.items, ProcessStage::Sanitize, ItemStatus::Completed);
 	assert_eq!(completed_sources, vec!["intro.md"]);
 
 	set_active_ai_selector(None);
@@ -417,6 +418,16 @@ fn sanitize_options(
 	} else {
 		options
 	}
+}
+
+fn relative_paths(items: &[ItemState], stage: ProcessStage, status: ItemStatus) -> Vec<String> {
+	let mut paths = items
+		.iter()
+		.filter(|item| item.stage(stage).is_some_and(|state| state.status == status))
+		.map(|item| item.relative_path.clone())
+		.collect::<Vec<_>>();
+	paths.sort();
+	paths
 }
 
 // endregion: --- Support

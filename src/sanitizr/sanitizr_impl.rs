@@ -1,7 +1,7 @@
 use super::sanitizr_prompt::{parse_sanitized_content, render_sanitize_prompt, resolve_instructions};
 use crate::mapr::{is_text_mappable, select_active_ai_client};
 use crate::process::pipeline::{ArtifactItem, ArtifactSet, StageOutput, WorkflowContext};
-use crate::process::{ProcessFailure, ProcessItem, ProcessProgress, ProcessStage, SanitizePrompt};
+use crate::process::{ItemId, ProcessStage, SanitizePrompt};
 use crate::support::hash_bytes;
 use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
@@ -42,29 +42,33 @@ pub(crate) async fn execute_sanitize(
 	input: ArtifactSet,
 	config: &SanitizeConfig,
 ) -> Result<StageOutput> {
-	context.progress.publish(ProcessProgress::StageStarted {
-		stage: ProcessStage::Sanitize,
-	});
+	context.progress.stage_started(ProcessStage::Sanitize);
+	let item_ids = context.progress.register_stage_items(
+		ProcessStage::Sanitize,
+		input
+			.items
+			.iter()
+			.map(|item| (item.source.clone(), item.relative_path.clone()))
+			.collect(),
+	);
+	context.progress.set_stage_total(ProcessStage::Sanitize);
 
 	let instructions = resolve_instructions(config.prompt.as_ref())?;
 	let prompt_hash = hash_bytes(instructions.as_bytes());
 	let prior_manifest = load_sanitize_manifest(context, &config.model, &prompt_hash);
 	let mut artifacts = Vec::new();
-	let mut completed_items = Vec::new();
-	let mut skipped_items = Vec::new();
-	let mut failures = Vec::new();
 	let mut pending_items = Vec::new();
 	let mut manifest_items = Vec::new();
 
-	for item in input.items {
+	for (item, id) in input.items.into_iter().zip(item_ids) {
 		let contents = match std::fs::read(item.local_path.as_std_path()) {
 			Ok(contents) => contents,
 			Err(error) => {
 				record_failure(
 					context,
+					id,
 					item.relative_path,
 					format!("failed to read file {}: {error}", item.local_path),
-					&mut failures,
 				);
 				continue;
 			}
@@ -80,15 +84,7 @@ pub(crate) async fn execute_sanitize(
 				reusable_output_hash(context, &item.relative_path, &input_hash, &prior_manifest)
 			{
 				let output_path = context.sanitize_output.join(item.relative_path.as_str());
-				let process_item = ProcessItem::new(
-					item.relative_path.clone(),
-					Some(output_path.clone()),
-					ProcessStage::Sanitize,
-				);
-				context.progress.publish(ProcessProgress::ItemSkipped {
-					item: process_item.clone(),
-				});
-				skipped_items.push(process_item);
+				context.progress.item_reused(id, ProcessStage::Sanitize, Some(output_path.clone()));
 				manifest_items.push(SanitizeManifestItem {
 					relative_path: item.relative_path.clone(),
 					input_hash,
@@ -102,16 +98,16 @@ pub(crate) async fn execute_sanitize(
 					source_hash: Some(output_hash),
 				});
 			} else {
-				pending_items.push((item, content.to_owned(), input_hash));
+				pending_items.push((item, id, content.to_owned(), input_hash));
 			}
 		} else {
 			let output_path = context.sanitize_output.join(item.relative_path.as_str());
 			if let Err(error) = write_sanitize_artifact(&output_path, &contents) {
 				record_failure(
 					context,
+					id,
 					item.relative_path,
 					error.to_string(),
-					&mut failures,
 				);
 				continue;
 			}
@@ -122,15 +118,7 @@ pub(crate) async fn execute_sanitize(
 				input_hash,
 				output_hash: output_hash.clone(),
 			});
-			let process_item = ProcessItem::new(
-				item.relative_path.clone(),
-				Some(output_path.clone()),
-				ProcessStage::Sanitize,
-			);
-			context.progress.publish(ProcessProgress::ItemSkipped {
-				item: process_item.clone(),
-			});
-			skipped_items.push(process_item);
+			context.progress.item_skipped(id, ProcessStage::Sanitize, Some(output_path.clone()));
 			artifacts.push(ArtifactItem {
 				source: item.source,
 				relative_path: item.relative_path,
@@ -145,7 +133,7 @@ pub(crate) async fn execute_sanitize(
 	let ai_client = select_active_ai_client(&config.model);
 	let mut join_set = tokio::task::JoinSet::new();
 
-	for (item, content, input_hash) in pending_items {
+	for (item, id, content, input_hash) in pending_items {
 		let semaphore = semaphore.clone();
 		let ai_client = ai_client.clone();
 		let progress = context.progress.clone();
@@ -156,16 +144,12 @@ pub(crate) async fn execute_sanitize(
 			let _permit = match semaphore.acquire_owned().await {
 				Ok(permit) => permit,
 				Err(error) => {
-					let failure = sanitize_failure(
-						item.relative_path.clone(),
-						format!("failed to acquire Sanitize processing permit: {error}"),
-					);
-					progress.publish(ProcessProgress::ItemFailed {
-						failure: failure.clone(),
-					});
-					return Err(failure);
+					let message = format!("failed to acquire Sanitize processing permit: {error}");
+					progress.item_failed(id, ProcessStage::Sanitize, message.clone());
+					return Err(message);
 				}
 			};
+			progress.item_running(id, ProcessStage::Sanitize);
 
 			let prompt = render_sanitize_prompt(&instructions, &item.relative_path, &content);
 			let output_path = output_root.join(item.relative_path.as_str());
@@ -185,15 +169,7 @@ pub(crate) async fn execute_sanitize(
 			match result {
 				Ok((output_bytes, usage)) => {
 					let output_hash = hash_bytes(&output_bytes);
-					let process_item = ProcessItem {
-						source: item.relative_path.clone(),
-						output_path: Some(output_path.clone()),
-						stage: ProcessStage::Sanitize,
-						usage,
-					};
-					progress.publish(ProcessProgress::ItemCompleted {
-						item: process_item.clone(),
-					});
+					progress.item_completed(id, ProcessStage::Sanitize, Some(output_path.clone()), usage.clone());
 					Ok((
 						ArtifactItem {
 							source: item.source,
@@ -202,7 +178,6 @@ pub(crate) async fn execute_sanitize(
 							media_type: item.media_type,
 							source_hash: Some(output_hash.clone()),
 						},
-						process_item,
 						SanitizeManifestItem {
 							relative_path: item.relative_path.clone(),
 							input_hash,
@@ -211,31 +186,23 @@ pub(crate) async fn execute_sanitize(
 					))
 				}
 				Err(message) => {
-					let failure = sanitize_failure(item.relative_path, message);
-					progress.publish(ProcessProgress::ItemFailed {
-						failure: failure.clone(),
-					});
-					Err(failure)
+					progress.item_failed(id, ProcessStage::Sanitize, message.clone());
+					Err(message)
 				}
 			}
 		});
 	}
 
 	while let Some(result) = join_set.join_next().await {
-		match result.map_err(|error| Error::TaskJoin(format!("Sanitize task failed: {error}")))? {
-			Ok((artifact, process_item, manifest_item)) => {
-				artifacts.push(artifact);
-				completed_items.push(process_item);
-				manifest_items.push(manifest_item);
-			}
-			Err(failure) => failures.push(failure),
+		if let Ok((artifact, manifest_item)) =
+			result.map_err(|error| Error::TaskJoin(format!("Sanitize task failed: {error}")))?
+		{
+			artifacts.push(artifact);
+			manifest_items.push(manifest_item);
 		}
 	}
 
 	artifacts.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
-	completed_items.sort_by(|left, right| left.source.cmp(&right.source));
-	skipped_items.sort_by(|left, right| left.source.cmp(&right.source));
-	failures.sort_by(|left, right| left.item.source.cmp(&right.item.source));
 	manifest_items.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
 
 	let manifest = SanitizeManifest {
@@ -251,18 +218,13 @@ pub(crate) async fn execute_sanitize(
 		format!("{manifest_json}\n").as_bytes(),
 	)?;
 
-	context.progress.publish(ProcessProgress::StageCompleted {
-		stage: ProcessStage::Sanitize,
-	});
+	context.progress.stage_completed(ProcessStage::Sanitize);
 
 	Ok(StageOutput {
 		artifacts: ArtifactSet {
 			root: context.sanitize_output.clone(),
 			items: artifacts,
 		},
-		completed_items,
-		skipped_items,
-		failures,
 	})
 }
 
@@ -316,22 +278,12 @@ fn reusable_output_hash(
 
 fn record_failure(
 	context: &WorkflowContext,
+	id: ItemId,
 	source: String,
 	message: String,
-	failures: &mut Vec<ProcessFailure>,
 ) {
-	let failure = sanitize_failure(source, message);
-	context.progress.publish(ProcessProgress::ItemFailed {
-		failure: failure.clone(),
-	});
-	failures.push(failure);
-}
-
-fn sanitize_failure(source: String, message: String) -> ProcessFailure {
-	ProcessFailure {
-		item: ProcessItem::new(source, None, ProcessStage::Sanitize),
-		message,
-	}
+	let _ = source;
+	context.progress.item_failed(id, ProcessStage::Sanitize, message);
 }
 
 fn write_sanitize_artifact(path: &SPath, contents: &[u8]) -> Result<()> {

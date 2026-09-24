@@ -1,4 +1,4 @@
-use zmapr::{ProcessContentOptions, ProcessProgress, ProgressRx, process_content};
+use zmapr::{ItemStatus, ProcessContentOptions, ProcessQuery, ProgressEvent, ProgressRx, process_content};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -11,8 +11,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 	let mut handle = process_content(options).await?;
 
+	let query = handle.query();
 	let progress_rx = handle.take_progress_rx().ok_or("expected progress receiver")?;
-	let progress_task = tokio::spawn(print_progress(progress_rx));
+	let progress_task = tokio::spawn(print_progress(progress_rx, query));
 
 	let output = handle.wait_output().await?;
 	progress_task.await?;
@@ -21,10 +22,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 	if let Some(map_path) = &output.content_map_path {
 		println!("Generated content map at {map_path}");
 	}
-	println!("Completed items: {}", output.completed_items.len());
+	let completed_items = output.stats.fetch.as_ref().map_or(0, |stats| stats.completed)
+		+ output.stats.sanitize.as_ref().map_or(0, |stats| stats.completed)
+		+ output.stats.map.as_ref().map_or(0, |stats| stats.completed);
+	println!("Completed items: {completed_items}");
 
-	let input_tokens = output.total_usage.as_ref().and_then(|usage| usage.prompt_tokens);
-	let output_tokens = output.total_usage.as_ref().and_then(|usage| usage.completion_tokens);
+	let input_tokens = output.stats.total_usage.as_ref().and_then(|usage| usage.prompt_tokens);
+	let output_tokens = output.stats.total_usage.as_ref().and_then(|usage| usage.completion_tokens);
 	println!(
 		"Total input tokens: {}",
 		input_tokens.map_or_else(|| "unavailable".to_string(), |tokens| tokens.to_string())
@@ -37,16 +41,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 	Ok(())
 }
 
-async fn print_progress(mut progress_rx: ProgressRx) {
-	while let Ok(event) = progress_rx.recv().await {
-		match event {
-			ProcessProgress::ItemCompleted { item } | ProcessProgress::ItemSkipped { item } => {
-				println!("{:?} - {}", item.stage, item.source);
+async fn print_progress(mut progress_rx: ProgressRx, query: ProcessQuery) {
+	while let Ok(update) = progress_rx.recv().await {
+		if let ProgressEvent::ItemStatusChanged { id, stage, status } = update.event
+			&& let Some(item) = query.item(id)
+		{
+			match status {
+				ItemStatus::Completed | ItemStatus::Reused | ItemStatus::Skipped => {
+					println!("{stage:?} - {}", item.source);
+				}
+				ItemStatus::Failed => {
+					let message = item
+						.stage(stage)
+						.and_then(|state| state.error.as_deref())
+						.unwrap_or("unknown");
+					println!(" - (FAIL) {} (cause: {message})", item.source);
+				}
+				_ => {}
 			}
-			ProcessProgress::ItemFailed { failure } => {
-				println!(" - (FAIL) {} (cause: {})", failure.item.source, failure.message);
-			}
-			_ => {}
 		}
 	}
 }
