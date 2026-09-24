@@ -1,6 +1,7 @@
 use crate::mapr::FileMapEntry;
 use crate::{Error, Result};
 use aho_corasick::AhoCorasick;
+use markex::tag::{self, TagOptions};
 use serde::Deserialize;
 use std::sync::LazyLock;
 
@@ -76,13 +77,16 @@ pub fn parse_file_info(response: &str) -> Result<FileMapEntry> {
 		.ok_or_else(|| Error::custom("missing <FILE_INFO> tag in AI response"))?
 		+ start_tag.len();
 
-	let end_idx = response[start_idx..]
-		.find(end_tag)
-		.ok_or_else(|| Error::custom("missing </FILE_INFO> tag in AI response"))?
-		+ start_idx;
-
-	let content_between = &response[start_idx..end_idx];
-	let clean_json = strip_markdown_fences(content_between);
+	let parts = tag::extract(response, &["FILE_INFO"], TagOptions::default());
+	let Some(tag_elem) = parts.tag_elems().into_iter().next() else {
+		let error = if response.contains(start_tag) {
+			Error::custom(format!("missing {end_tag} tag in AI response"))
+		} else {
+			Error::custom(format!("missing {start_tag} tag in AI response"))
+		};
+		return Err(error);
+	};
+	let clean_json = strip_markdown_fences(&tag_elem.content);
 
 	let raw_info: RawFileInfo = serde_json::from_str(clean_json)
 		.map_err(|err| Error::custom(format!("failed to parse FILE_INFO JSON: {err}")))?;

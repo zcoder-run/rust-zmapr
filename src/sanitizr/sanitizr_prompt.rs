@@ -1,5 +1,6 @@
 use crate::process::SanitizePrompt;
 use crate::{Error, Result};
+use markex::tag::{self, TagOptions};
 
 // region:    --- Constants
 
@@ -32,13 +33,16 @@ pub(crate) fn parse_sanitized_content(response: &str) -> Result<String> {
 		.ok_or_else(|| Error::custom("missing <SANITIZED_CONTENT> tag in AI response"))?
 		+ start_tag.len();
 
-	let end_idx = response[start_idx..]
-		.find(end_tag)
-		.ok_or_else(|| Error::custom("missing </SANITIZED_CONTENT> tag in AI response"))?
-		+ start_idx;
-
-	let content = &response[start_idx..end_idx];
-	Ok(strip_one_trailing_newline(strip_one_newline(content)).to_owned())
+	let parts = tag::extract(response, &["SANITIZED_CONTENT"], TagOptions::default());
+	let Some(tag_elem) = parts.tag_elems().into_iter().next() else {
+		let error = if response.contains(start_tag) {
+			Error::custom(format!("missing {end_tag} tag in AI response"))
+		} else {
+			Error::custom(format!("missing {start_tag} tag in AI response"))
+		};
+		return Err(error);
+	};
+	Ok(strip_one_trailing_newline(strip_one_newline(&tag_elem.content)).to_owned())
 }
 
 pub(crate) fn resolve_instructions(prompt: Option<&SanitizePrompt>) -> Result<String> {
