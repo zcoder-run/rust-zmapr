@@ -1,16 +1,13 @@
-use zmapr::{ContentMapOptions, ProcessContentOptions, ProcessProgress, WebFetchRequest, process_content};
+use zmapr::{ProcessContentOptions, ProcessProgress, process_content};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
 	let options = ProcessContentOptions::new("examples/.out/c04-mapr")
-		.with_fetch(
-			WebFetchRequest::new("https://docs.rs/genai/0.7.0-beta.23/genai/")
-				.with_same_host_only(true)
-				.with_follow_links(true)
-				.with_max_depth(1)
-				.with_llms(true),
-		)
-		.with_content_map(ContentMapOptions::new("gpt-6-luna"));
+		.with_source("https://docs.rs/genai/0.7.0-beta.23/genai/")
+		.with_max_depth(1)
+		.with_llms(true)
+		.with_map(true)
+		.with_model("gpt-6-luna");
 
 	let mut handle = process_content(options).await?;
 	let mut progress_rx = handle.take_progress_rx().ok_or("expected progress receiver")?;

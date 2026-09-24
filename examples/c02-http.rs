@@ -1,13 +1,10 @@
-use zmapr::{ProcessContentOptions, WebFetchRequest, process_content};
+use zmapr::{ProcessContentOptions, process_content};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-	let options = ProcessContentOptions::new("examples/.out/c02-http").with_fetch(
-		WebFetchRequest::new("https://docs.typesafe.ai/introduction")
-			.with_same_host_only(true)
-			.with_follow_links(true)
-			.with_max_depth(1),
-	);
+	let options = ProcessContentOptions::new("examples/.out/c02-http")
+		.with_source("https://docs.typesafe.ai/introduction")
+		.with_max_depth(1);
 
 	let handle = process_content(options).await?;
 	let output = handle.wait_output().await?;

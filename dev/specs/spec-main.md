@@ -2,19 +2,44 @@
 
 ## Basic usage
 
-`zmapr` maps local or website content into AI-oriented context through one public workflow function. Callers select stages with options, while stage ordering and artifact handling remain internal.
-The function returns a running handle so callers can observe progress, query state, and await completion.
+`zmapr` maps local or website content into AI-oriented context through one workflow function. The workflow runs the selected stages in a fixed order: Fetch, Sanitize, then Map. The returned handle lets callers observe progress, query state, and await the final output.
 
-The initial usable workflow is local Fetch with optional Sanitize:
+Fetch only, using Markdown as the default format:
 
 ```rust
-let handle = process_content(
-    ProcessContentOptions::new("target/zmapr-docs")
-        .with_fetch(LocalFetchRequest::new("docs"))
-        .with_sanitize(SanitizeOptions::default()),
-)
-.await?;
-let output = handle.wait_output().await?;
+ProcessContentOptions::new("target/zmapr-docs")
+    .with_source("https://example.com/docs");
+```
+
+Fetch and Map:
+
+```rust
+ProcessContentOptions::new("target/zmapr-docs")
+    .with_source("docs")
+    .with_map(true)
+    .with_model("gpt-5-mini");
+```
+
+Fetch, Sanitize, and Map with separate models and custom Sanitize instructions:
+
+```rust
+ProcessContentOptions::new("target/zmapr-docs")
+    .with_source("https://example.com/docs")
+    .with_max_depth(3)
+    .with_sanitize(true)
+    .with_map(true)
+    .with_model("gpt-5")
+    .with_sanitize_model("gpt-5-mini")
+    .with_sanitize_prompt(SanitizePrompt::file("prompts/sanitize.md"));
+```
+
+Map an existing Fetch cache:
+
+```rust
+ProcessContentOptions::new("target/zmapr-docs")
+    .with_map(true)
+    .with_model("gpt-5-mini")
+    .with_resume(true);
 ```
 
 The public entry point is:
@@ -25,7 +50,7 @@ pub async fn process_content(
 ) -> Result<ProcessContentHandle>;
 ```
 
-The returned handle keeps progress, completion, and state queries separate:
+The returned handle separates progress, final output, and state queries:
 
 ```rust
 impl ProcessContentHandle {
@@ -35,23 +60,19 @@ impl ProcessContentHandle {
 }
 ```
 
-AI Augment is modeled by the public API but remains deferred. AI Content Map is implemented as described below.
-
 ## Architecture
 
 ```mermaid
 flowchart LR
-    source[ContentSource] --> fetch[Fetch]
+    source[Content source] --> fetch[Fetch]
     fetch --> sanitize[Sanitize]
-    sanitize --> augment[AI Augment]
-    augment --> map[AI Content Map]
-    fetch --> response[ProcessContentResponse]
+    sanitize --> map[Map]
+    fetch --> response[Workflow output]
     sanitize --> response
-    augment --> response
     map --> response
 ```
 
-The workflow executes selected stages in this fixed order. Disabled stages pass the current artifact set through unchanged, except that disabling Fetch requires a valid prior Fetch result.
+Stages execute in the fixed order shown. A disabled stage passes the current artifact set through unchanged. When Fetch is disabled and Sanitize or Map is enabled, the workflow loads a valid prior Fetch result.
 
 ## Sources
 
@@ -72,144 +93,106 @@ pub struct WebContentSource {
 }
 ```
 
-`ContentSource` remains public to represent sources abstractly, and is resolved when inspecting workflow contexts or loading prior manifests. Requests bind their specific source payload (`LocalContentSource` or `WebContentSource`) directly. Convenience constructors are provided through `ContentSource::local` and `ContentSource::web`, as well as `LocalFetchRequest::new` and `WebFetchRequest::new`.
+`ContentSource` represents a resolved local or web source when inspecting workflow state or prior manifests. Convenience constructors are provided through `ContentSource::local` and `ContentSource::web`. The flat workflow options accept the source as a local path or an HTTP(S) URL string.
 
 ## Workflow options
+
+`ProcessContentOptions` configures all stages without exposing pipeline construction:
 
 ```rust
 pub struct ProcessContentOptions {
     pub destination: SPath,
-    pub fetch: Option<FetchRequest>,
-    pub sanitize: Option<SanitizeOptions>,
-    pub ai_augment: Option<AiAugmentOptions>,
-    pub content_map: Option<ContentMapOptions>,
+    pub source: Option<String>,
+    pub include: Vec<String>,
+    pub exclude: Vec<String>,
+    pub format: FetchFormat,
+    pub max_depth: usize,
+    pub llms: bool,
+    pub sanitize: bool,
+    pub map: bool,
+    pub model: Option<String>,
+    pub sanitize_model: Option<String>,
+    pub map_model: Option<String>,
+    pub sanitize_prompt: Option<SanitizePrompt>,
     pub resume: bool,
     pub max_concurrency: usize,
 }
 ```
 
-`ProcessContentOptions::new(destination)` creates an empty workflow. `with_fetch`, `with_sanitize`, `with_ai_augment`, and `with_content_map` enable individual stages without exposing pipeline construction.
+`ProcessContentOptions::new(destination)` creates a workflow with optional stages disabled and no source selected.
 
-An empty workflow is invalid. `max_concurrency` must be greater than zero.
+Defaults are:
+
+- `format` is `FetchFormat::Markdown`.
+- `max_depth` is `0`.
+- `llms` is `true`.
+- `sanitize`, `map`, and `resume` are `false`.
+- `max_concurrency` is `8`.
+- Optional model, source, and prompt fields are `None`.
+- `include` and `exclude` are empty.
+
+Builder methods are grouped by purpose:
+
+- Fetch: `with_source`, `with_include`, `append_include`, `append_includes`, `with_exclude`, `append_exclude`, `append_excludes`, `with_format`, `with_max_depth`, and `with_llms`.
+- AI stages: `with_sanitize`, `with_map`, `with_model`, `with_sanitize_model`, `with_map_model`, and `with_sanitize_prompt`.
+- Workflow: `with_resume` and `with_max_concurrency`.
+
+`FetchFormat` has `Raw`, `Slim`, and `Markdown` variants. `Markdown` is the default. `SanitizePrompt` has `FilePath(SPath)` and `Content(String)` variants, with `SanitizePrompt::file` and `SanitizePrompt::content` constructors.
+
+The Sanitize model resolves from `sanitize_model`, then `model`. The Map model resolves from `map_model`, then `model`. Every enabled AI stage requires a nonempty resolved model. The provider is selected from the model name.
 
 ## Core stages
 
-The core stages run in a fixed order: Fetch, Sanitize, AI Augment, then AI Content Map. Each stage is enabled by its corresponding optional field in `ProcessContentOptions`. Disabled stages pass the current artifact set through unchanged, except that disabling Fetch requires a valid prior Fetch result.
-
 | Stage | Intent | Configuration |
 |---|---|---|
-| Fetch | Selects and acquires local or web content for processing. | `FetchRequest` selects a local or web source. Common options provide `include` and `exclude` patterns. Local options configure `copy_local_files`; web options configure `same_host_only`, `follow_links`, `max_depth`, and `llms`. |
-| Sanitize | Mechanically prepares content for downstream stages by slimming HTML and/or converting supported content to Markdown. | `SanitizeOptions`: `slim_html` and `convert_to_markdown`. |
-| AI Augment | Uses an AI provider to clean up and format supported content. | `AiAugmentOptions`: `provider` and `model`. |
-| AI Content Map | Analyzes content and publishes a structured content map. | `ContentMapOptions`: `model`, `journal_path`, `reuse_unchanged_records`, `retain_journal`, `to_md`, `max_size`, and `max_cost` (not yet enforced). |
+| Fetch | Acquires local or web content and stores it in the Fetch cache. | Set `source`; configure selection patterns, format, crawl depth, and `llms`. |
+| Sanitize | Uses an AI model to clean supported text while preserving substantive content. | Set `sanitize`; configure a model and, optionally, replacement instructions. |
+| Map | Analyzes current artifacts and publishes a structured content map. | Set `map` and configure a model. |
 
-## Stage options
+## Fetch
 
-### Fetch
+Fetch runs when `source` is set. An `http://` or `https://` source is treated as a web URL; any other source is treated as a local path. Local files and recursively selected directory files are copied into `.tmp-zmapr/01-fetch/`. Symbolic links are skipped.
 
-```rust
-pub enum FetchRequest {
-    Local(LocalFetchRequest),
-    Web(WebFetchRequest),
-}
+Include patterns are applied before exclusions. Exclusions take precedence, and selected paths are sorted by stable relative path. Local and web sources use the same patterns.
 
-pub struct FetchCommonOptions {
-    pub include: Vec<String>,
-    pub exclude: Vec<String>,
-}
+Web crawling is scoped to the base folder of the starting URL. The starting resource is fetched at depth zero. Linked pages are discovered and fetched up to `max_depth`; a value of zero fetches only the starting resource. When `llms` is enabled, Fetch probes for `llms.txt` at the remote base folder. Valid entries are downloaded directly while preserving the URL folder hierarchy. If the file is absent, empty, or has no valid entries, Fetch falls back to regular HTML link crawling. Scoped paths without an extension receive a default `.html` extension during regular crawling.
 
-pub struct LocalFetchRequest {
-    pub source: LocalContentSource,
-    pub common: FetchCommonOptions,
-    pub options: LocalFetchOptions,
-}
+Fetch formats HTML detected by media type or by the `.html`, `.htm`, or `.xhtml` extension. Other files are stored unchanged in every format.
 
-pub struct LocalFetchOptions {
-    pub copy_local_files: bool,
-}
+- `Raw` stores HTML bytes as received.
+- `Slim` slims HTML and keeps its path and media type.
+- `Markdown` slims HTML, converts it to Markdown, replaces its extension with `.md`, and sets the media type to `text/markdown`.
 
-pub struct WebFetchRequest {
-    pub source: WebContentSource,
-    pub common: FetchCommonOptions,
-    pub options: WebFetchOptions,
-}
+Non-UTF-8 HTML and transformation errors are reported as item failures. Fetch detects duplicate stored paths and reports collisions as item-level failures rather than silently accepting the conflicting path.
 
-pub struct WebFetchOptions {
-    pub same_host_only: bool,
-    pub follow_links: bool,
-    pub max_depth: usize,
-    pub llms: Option<bool>,
-}
-```
+The Fetch manifest is version 4. It records selection patterns and format, plus web crawl depth and `llms` settings for web sources. Each item records its stored relative path, original relative path, source content hash, and stored artifact hash. Prior Fetch loading supports local and web manifests and validates the cache root, artifact paths, and artifact hashes.
 
-Fetch selects local files or crawls websites. Common include and exclude patterns are shared across sources: include patterns are applied before exclusions, exclusions take precedence, and selected paths are sorted by stable relative path. Local directory traversal is recursive and skips symbolic links.
+## Sanitize
 
-For local sources, Fetch either copies files below `.tmp-zmapr/01-fetch/` or retains their original paths according to `copy_local_files`. It records source-relative paths and stable content hashes.
+Sanitize processes the current artifact set from Fetch or a prior Fetch cache. It sends supported UTF-8 text up to 200,000 bytes to the configured AI model. The built-in instructions remove navigation and boilerplate while preserving substantive content, add code fence language identifiers when determinable, normalize formatting, and prohibit invented content. A custom `SanitizePrompt` replaces the built-in instructions.
 
-Website Fetch crawls from the starting URL, scoping candidate links to the starting URL base folder, and optionally following links while respecting `same_host_only` and `max_depth` settings. When `llms` is enabled, Fetch probes for an `llms.txt` file at the remote base folder URL before crawling. If `llms.txt` is discovered and contains valid entries, Fetch downloads the listed documents directly, mirroring the remote URL folder hierarchy locally and using the final URL path segment for the file name. If `llms.txt` is absent, empty, or unparseable, Fetch transparently falls back to regular HTML link crawling. In regular HTML crawling, scoped download paths without a file extension automatically receive a default `.html` extension.
+The engine adds the artifact's relative path, wraps the input in `<SANITIZE_INPUT>` tags, and asks the model to return cleaned content between `<SANITIZED_CONTENT>` tags. Missing output tags, model errors, and write errors are item failures.
 
-### Sanitize
+Successful output keeps the input relative path under `.tmp-zmapr/02-sanitize/`. Writes use a temporary sibling file followed by a rename. Items that are unsupported, too large, or not valid UTF-8 are copied unchanged to the Sanitize output and reported as skipped. Item processing is concurrent and bounded by `max_concurrency`. Per-item model usage is attached to successful `ProcessItem` results.
 
-```rust
-pub struct SanitizeOptions {
-    pub slim_html: bool,
-    pub convert_to_markdown: bool,
-}
-```
+When `resume` is enabled, Sanitize reuses an output only if the manifest's model and instruction hash match, the input hash is unchanged, and the output still matches its recorded hash. The version 1 manifest is stored at `.tmp-zmapr/sanitize-manifest.json`.
 
-Sanitize reads supported UTF-8 text and HTML artifacts, optionally removes nonessential HTML structure, and optionally converts HTML to Markdown. It writes a new artifact set below `.tmp-zmapr/stages/sanitize` without changing Fetch artifacts or source files.
+## Map
 
-Unsupported or non-UTF-8 files are reported as skipped. Item-level transformation failures are retained in the response.
+Map analyzes the artifacts from the preceding stage directly. It does not create a prepared copy or transform the artifacts. Map keys are the upstream relative paths, such as `index.md`, and Map is terminal: it does not replace the current content artifacts.
 
-### AI Augment
-
-```rust
-pub struct AiAugmentOptions {
-    pub provider: String,
-    pub model: String,
-}
-```
-
-AI Augment sends supported current artifacts to the configured provider and model, then writes augmented results below `.tmp-zmapr/stages/ai-augment`. Provider and model values must be nonempty.
-
-### AI Content Map
-
-```rust
-pub struct ContentMapOptions {
-    pub model: String,
-    pub journal_path: Option<SPath>,
-    pub reuse_unchanged_records: bool,
-    pub retain_journal: bool,
-    pub to_md: Option<bool>,
-    pub max_size: Option<usize>,
-    pub max_cost: Option<f64>,
-}
-```
-
-AI Content Map prepares a separate copy of the artifacts received from its upstream stage under `.tmp-zmapr/02-map/` and analyzes that copy without changing source or upstream artifacts. Each artifact is copied when its item is processed, including items later skipped. When `to_md` is enabled, HTML is converted to Markdown and the prepared `.md` file is stored instead of an HTML copy. The published `<destination>/content-map.json` is the only content-map output; no `content-map.md` is published. The JSON includes per-file source modification time, source hash, prepared path, and prepared-content hash metadata. AI Content Map is terminal, so it does not replace the current content artifacts. File and folder analysis is journaled in an append-only NDJSON file (`.tmp-zmapr/content-map.journal.jsonl` or a custom `journal_path`) with immediate record flushes and crash recovery. File records identify the prepared relative paths in `02-map/` and use hashes of prepared content. Records are reusable when the journal header fingerprint (blake3 hash of model, prompt version, and artifact root) matches and the prepared input is unchanged. Valid journal entries are reconciled into a partial `content-map.json` before AI processing continues. On header or version mismatch, the journal is invalidated and rebuilt from scratch. When `retain_journal` is false, the journal is removed upon successful publication.
+Map writes `<destination>/content-map.json`. The JSON contains a provenance header, `file_map`, `folder_map`, and `file_metadata`. The internal per-file size limit is 200,000 bytes. The journal is NDJSON at `.tmp-zmapr/content-map.journal.jsonl`, with records flushed as they are appended. Its fingerprint includes the model, prompt version, and input artifact root. Journal entries can be reused when `resume` is enabled and the input path and hash match. Incompatible journal headers are invalidated. The journal is retained for subsequent runs; prior records are cleared rather than reused when resume is disabled.
 
 ## Internal pipeline
 
-The public function builds a private workflow context and executes internal stages through a shared asynchronous contract:
+The pipeline module is private. Internal types separate orchestration from public results:
 
-```rust
-trait ProcessingStage {
-    fn execute<'a>(
-        &'a self,
-        context: &'a WorkflowContext,
-        input: ArtifactSet,
-    ) -> StageFuture<'a>;
-}
-```
-
-Internal types separate orchestration from public results:
-
-- `WorkflowContext` contains resolved paths, resume settings, and concurrency limits.
+- `WorkflowContext` contains resolved paths, resume settings, concurrency limits, and progress state.
 - `ArtifactSet` identifies the current artifact root and ordered items.
-- `ArtifactItem` stores source identity, relative path, local path, media type, and optional hash.
+- `ArtifactItem` stores source identity, relative path, local path, media type, and an optional hash.
 - `StageOutput` contains the next artifact set and item-level completed, skipped, and failed outcomes.
 
-The pipeline module is private. Callers cannot define custom stages or alter stage ordering.
+Callers cannot define custom stages or alter stage ordering.
 
 ## Artifact layout
 
@@ -219,31 +202,29 @@ All generated state is rooted at the configured destination:
 <destination>/
 ├── .tmp-zmapr/
 │   ├── 01-fetch/
-│   ├── 02-map/
-│   ├── stages/
-│   │   ├── sanitize/
-│   │   └── ai-augment/
+│   ├── 02-sanitize/
 │   ├── manifest.json
+│   ├── sanitize-manifest.json
 │   └── content-map.journal.jsonl
 └── content-map.json
 ```
 
-Each stage writes to its own location. Prior-stage artifacts remain immutable so downstream failures can be retried without mutating source content or successful upstream work.
+Fetch and Sanitize write to separate locations so downstream failures can be retried without mutating source files or successful upstream work.
 
 ## Validation and recovery
 
-Validation occurs before destination mutation or stage execution. It checks:
+Request validation checks the workflow before stage execution:
 
-- At least one stage is enabled.
-- Concurrency is nonzero.
-AI Augment has nonempty provider and model values, and Content Map has a nonempty model.
-- Source path or web URL is structurally valid.
-- Downstream processing without Fetch has a valid existing Fetch cache and manifest.
-- Deferred stages return structured `Unsupported` errors.
+- At least one of Fetch, Sanitize, or Map is enabled.
+- `max_concurrency` is greater than zero.
+- Every enabled AI stage resolves to a nonempty model.
+- A local source exists and is a file or directory, or a web source is a structurally valid HTTP(S) URL.
+- A Sanitize prompt file exists, and inline prompt content is nonempty.
+- When Fetch is disabled and a downstream stage is enabled, a valid prior Fetch manifest and cache are required.
 
-The initial resume behavior may reuse only a complete matching Fetch result under `.tmp-zmapr/01-fetch/`. A Fetch run rebuilds legacy cache state rather than reusing artifacts from the old Fetch path. When Fetch is disabled, incompatible legacy cache state is rejected rather than treated as valid prior output. Missing, incompatible, or incomplete state is rebuilt rather than treated as reusable.
+When resume is enabled, local Fetch may reuse a complete matching result when source, options, paths, and artifact hashes still match. Sanitize reuse additionally requires matching model, instructions, input hash, and output hash. Map reuse requires a matching journal fingerprint and unchanged artifact input. Missing, incompatible, or incomplete state is not treated as reusable.
 
-Durable publication should use deterministic serialization and atomic replacement. Temporary sibling files are written first, then renamed into their final locations.
+Durable publication uses deterministic serialization and atomic replacement where applicable. Temporary sibling files are written first, then renamed into their final locations.
 
 ## Results
 
@@ -258,21 +239,31 @@ pub struct ProcessContentOutput {
     pub completed_items: Vec<ProcessItem>,
     pub skipped_items: Vec<ProcessItem>,
     pub failures: Vec<ProcessFailure>,
+    pub total_usage: Option<genai::chat::Usage>,
 }
 
 pub struct ProcessItem {
     pub source: String,
     pub output_path: Option<SPath>,
     pub stage: ProcessStage,
+    pub usage: Option<genai::chat::Usage>,
 }
 
 pub struct ProcessFailure {
     pub item: ProcessItem,
     pub message: String,
 }
+
+pub enum ProcessStage {
+    Fetch,
+    Sanitize,
+    Map,
+}
 ```
 
-`ProcessItem` identifies successful or skipped work. `ProcessFailure` preserves item-level errors without hiding successful work from the same stage.
+`ProcessItem` identifies successful or skipped work and may carry model usage. `ProcessFailure` preserves item-level errors without hiding successful work from the same stage. The output's `total_usage` aggregates usage reported by completed AI items.
+
+Progress notifications report stage starts and completions, along with completed, skipped, and failed items. Notifications are observational and may be dropped when the bounded channel is full. The query handle exposes authoritative in-memory workflow state.
 
 ## Content-map contract
 
@@ -284,6 +275,7 @@ pub struct ContentMapDocument {
     pub generated_at: String,
     pub file_map: BTreeMap<String, FileMapEntry>,
     pub folder_map: BTreeMap<String, FolderMapEntry>,
+    pub file_metadata: BTreeMap<String, FileMapMetadata>,
 }
 
 pub struct ContentMap {
@@ -308,67 +300,64 @@ pub struct FolderMapEntry {
 pub struct FileMapMetadata {
     pub last_modified_unix_nanos: Option<u64>,
     pub source_hash: String,
-    pub prepared_path: String,
-    pub prepared_hash: String,
 }
 ```
 
-The serialized document `content-map.json` contains a provenance header (`version`, `model`, `prompt_version`, `generated_at`) alongside `file_map`, `folder_map`, and `file_metadata`. `file_map` indexes source-relative file paths to their summaries, usage guidance, public symbols, and topics. `file_metadata` records source timestamps and hashes together with the prepared mapper path and prepared-content hash. `folder_map` is currently emitted as an empty map for future folder summaries. Folder entries intentionally do not include code-specific public type or function fields. The only published map is `<destination>/content-map.json`.
+The serialized `content-map.json` contains a provenance header alongside `file_map`, `folder_map`, and `file_metadata`. File map and metadata keys are upstream artifact-relative paths. Metadata records the source modification time, when available, and the hash of the mapped artifact. `folder_map` is currently emitted as an empty map. The only published map is `<destination>/content-map.json`.
 
 ## Errors
 
-The crate exposes one `Result<T>` alias and a structured `Error` enum. Process failures distinguish:
+The crate exposes a `Result<T>` alias and a structured `Error` enum. Workflow errors distinguish:
 
-- `InvalidConfiguration`, for incompatible options or sources.
-- `Unsupported`, for modeled but unimplemented functionality.
+- `InvalidConfiguration`, for incompatible options or invalid sources.
 - `InvalidCache`, for missing or invalid prior artifacts.
 - `MalformedState`, for missing or invalid durable workflow state.
+- Dedicated I/O and HTTP error variants for external failures.
 
-External I/O and HTTP failures are represented by dedicated error variants. Production paths do not panic for expected workflow failures.
+Expected workflow failures are returned as errors or retained as item-level failures; production paths do not panic for them.
 
 ## Implementation scope
 
-The first complete vertical slice is:
+The implemented workflow includes:
 
-- Local file and recursive directory Fetch.
-- Symbolic-link skipping.
-- Deterministic include and exclude selection.
-- Optional copying into the Fetch cache.
-- Stable source hashes.
-- Website Fetch with URL base folder scoping, link extraction, and depth limits.
-- Website Fetch with `llms.txt` discovery, link parsing, and automatic HTML fallback.
-- Optional UTF-8 text and HTML Sanitize.
-- Fetch-only and Fetch-plus-Sanitize responses.
-- AI Content Map stage generating `content-map.json` with NDJSON journal reuse.
-- Structured errors for the deferred AI Augment stage.
+- Local file and recursive directory Fetch with symbolic-link skipping.
+- Deterministic include and exclude selection and stable source hashes.
+- Local and web Fetch with Raw, Slim, and Markdown HTML formats.
+- Website crawling with base-folder scoping, link extraction, and depth limits.
+- Website Fetch with `llms.txt` discovery, link parsing, and HTML crawl fallback.
+- Fetch manifests and validation of prior local and web Fetch artifacts.
+- AI Sanitize with custom instructions, bounded concurrency, item-level failures, and resume reuse.
+- AI Map producing `content-map.json` with journal-backed reuse.
+- Progress, query state, per-item usage, and aggregate usage reporting.
 
-The public contracts for Website Fetch, AI Augment, manifests, journals, and complete resume behavior are established before their full execution is implemented.
+Folder summaries are not generated; `folder_map` remains empty.
 
 ## Module boundaries
 
-The crate root reexports the public error and process APIs. The `process` module owns public workflow types and privately contains pipeline implementation details, while `mapr` houses the content mapping engine:
+The crate root reexports the public error, process, Fetch format, Sanitize prompt, source, and content-map APIs. The `process` module owns workflow types and privately contains pipeline implementation details. Fetch, Sanitize, and Map implementations remain in their respective modules:
 
 ```text
 src/
 ├── lib.rs
 ├── error.rs
+├── fetchr/
 ├── mapr/
-│   ├── mod.rs
 │   ├── content-map.tmpl
 │   ├── mapr_ai.rs
 │   ├── mapr_impl.rs
 │   ├── mapr_journal.rs
 │   ├── mapr_prompt.rs
-│   ├── mapr_types.rs
-│   └── support.rs
+│   └── mapr_types.rs
 ├── process/
-│   ├── mod.rs
 │   ├── options/
 │   ├── pipeline.rs
 │   ├── process_impl.rs
+│   ├── progress.rs
 │   ├── response.rs
+│   └── state.rs
+├── sanitizr/
+│   ├── sanitizr_impl.rs
+│   └── sanitizr_prompt.rs
 └── webc/
 ```
-
-Public models remain focused in their own files. Internal stage contracts stay private so the high-level workflow remains stable while stage implementations evolve.
 

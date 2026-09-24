@@ -1,16 +1,16 @@
 use super::fetchr_types::{FETCH_MANIFEST_VERSION, FetchManifest, FetchManifestItem, FetchManifestOptions};
 use super::support::{
-	ensure_parent, hash_bytes, is_path_selected, media_type_for, path_to_string, write_fetch_manifest,
+	apply_fetch_format, ensure_parent, hash_bytes, is_path_selected, media_type_for, path_to_string,
+	write_fetch_artifact, write_fetch_manifest, FormattedArtifact,
 };
 use crate::fetchr::{WebFetchOptions, WebFetchRequest};
 use crate::process::pipeline::{ArtifactItem, ArtifactSet, StageOutput, WorkflowContext};
-use crate::process::{ProcessFailure, ProcessItem, ProcessProgress, ProcessStage, WebContentSource};
+use crate::process::{FetchFormat, ProcessFailure, ProcessItem, ProcessProgress, ProcessStage, WebContentSource};
 use crate::webc::{WebClient, new_client};
 use crate::{Error, Result};
 use reqwest::Url;
 use simple_fs::{SPath, ensure_dir};
 use std::collections::HashSet;
-use std::fs::write;
 use std::path::Path;
 use std::sync::Arc;
 use tokio::sync::Semaphore;
@@ -67,6 +67,7 @@ pub(crate) async fn execute_http_fetch(request: &WebFetchRequest, context: &Work
 	let mut skipped_items = Vec::new();
 	let mut failures = Vec::new();
 	let mut manifest_items = Vec::new();
+	let mut stored_paths = HashSet::new();
 
 	while !current_level.is_empty() {
 		let mut tasks = Vec::with_capacity(current_level.len());
@@ -80,9 +81,10 @@ pub(crate) async fn execute_http_fetch(request: &WebFetchRequest, context: &Work
 			let client = client.clone();
 			let base_folder = base_folder_url.clone();
 
-			let task = tokio::spawn(async move {
+				let format = request.common.format;
+				let task = tokio::spawn(async move {
 				let _permit = permit;
-				fetch_single_url(&client, &url, &base_folder).await
+					fetch_single_url(&client, &url, &base_folder, format).await
 			});
 			tasks.push(task);
 		}
@@ -96,10 +98,36 @@ pub(crate) async fn execute_http_fetch(request: &WebFetchRequest, context: &Work
 
 			match fetch_outcome {
 				Ok(fetched) => {
-					let relative_path = fetched.relative_path;
+					let relative_path = fetched.relative_path.clone();
+					let origin_relative_path = fetched.origin_relative_path.clone();
 					let source_url = fetched.url.as_str().to_owned();
 
-					if is_path_selected(&relative_path, &request.common) {
+					if is_path_selected(&origin_relative_path, &request.common)
+						&& !stored_paths.insert(relative_path.clone())
+					{
+						let artifact_path = artifact_root.join(&relative_path);
+						let failure = ProcessFailure {
+							item: ProcessItem {
+								source: relative_path.clone(),
+								output_path: None,
+								stage: ProcessStage::Fetch,
+								usage: None,
+							},
+							message: format!("multiple input artifacts resolve to fetch path {relative_path}"),
+						};
+						manifest_items.push(FetchManifestItem {
+							source: source_url,
+							relative_path: relative_path.clone(),
+							origin_relative_path,
+							local_path: path_to_string(&artifact_path).unwrap_or_default(),
+							artifact_path: None,
+							media_type: fetched.media_type.clone(),
+							content_hash: fetched.content_hash.clone(),
+							artifact_hash: fetched.artifact_hash.clone(),
+						});
+						failures.push(failure.clone());
+						context.progress.publish(ProcessProgress::ItemFailed { failure });
+					} else if is_path_selected(&origin_relative_path, &request.common) {
 						let artifact_path = artifact_root.join(&relative_path);
 						if let Err(err) = ensure_parent(&artifact_path) {
 							let failure = ProcessFailure {
@@ -116,7 +144,7 @@ pub(crate) async fn execute_http_fetch(request: &WebFetchRequest, context: &Work
 							continue;
 						}
 
-						if let Err(err) = write(artifact_path.as_std_path(), &fetched.body) {
+						if let Err(err) = write_fetch_artifact(&artifact_path, &fetched.body) {
 							let failure = ProcessFailure {
 								item: ProcessItem {
 									source: relative_path.clone(),
@@ -130,10 +158,12 @@ pub(crate) async fn execute_http_fetch(request: &WebFetchRequest, context: &Work
 							manifest_items.push(FetchManifestItem {
 								source: source_url,
 								relative_path: relative_path.clone(),
+								origin_relative_path: origin_relative_path.clone(),
 								local_path: artifact_path_str.clone().unwrap_or_default(),
 								artifact_path: None,
-								media_type: fetched.media_type,
-								content_hash: fetched.content_hash,
+								media_type: fetched.media_type.clone(),
+								content_hash: fetched.content_hash.clone(),
+								artifact_hash: fetched.artifact_hash.clone(),
 							});
 							failures.push(failure.clone());
 							context.progress.publish(ProcessProgress::ItemFailed { failure });
@@ -151,10 +181,12 @@ pub(crate) async fn execute_http_fetch(request: &WebFetchRequest, context: &Work
 						manifest_items.push(FetchManifestItem {
 							source: source_url,
 							relative_path: relative_path.clone(),
+							origin_relative_path,
 							local_path: artifact_path_str.clone(),
 							artifact_path: Some(artifact_path_str),
 							media_type: fetched.media_type.clone(),
 							content_hash: fetched.content_hash.clone(),
+							artifact_hash: fetched.artifact_hash.clone(),
 						});
 
 						artifacts.push(ArtifactItem {
@@ -162,7 +194,7 @@ pub(crate) async fn execute_http_fetch(request: &WebFetchRequest, context: &Work
 							relative_path: relative_path.clone(),
 							local_path: artifact_path,
 							media_type: fetched.media_type.clone(),
-							source_hash: Some(fetched.content_hash),
+							source_hash: Some(fetched.artifact_hash.clone()),
 						});
 
 						completed_items.push(process_item.clone());
@@ -180,10 +212,10 @@ pub(crate) async fn execute_http_fetch(request: &WebFetchRequest, context: &Work
 
 					if is_depth_allowed(current_depth + 1, &request.options)
 						&& fetched
-							.media_type
+							.source_media_type
 							.as_deref()
 							.is_some_and(|media| media.starts_with("text/html"))
-						&& let Ok(html_text) = std::str::from_utf8(&fetched.body)
+						&& let Ok(html_text) = std::str::from_utf8(&fetched.source_body)
 						&& let Ok(links) = extract_links(html_text, &fetched.url)
 					{
 						for link in links {
@@ -260,10 +292,16 @@ async fn execute_llms_fetch(
 	let mut failures = Vec::new();
 	let mut manifest_items = Vec::new();
 
-	let llms_relative_path = url_to_relative_path_with_options(&probe.probe_url, base_folder_url, false)?;
+	let origin_llms_relative_path = url_to_relative_path_with_options(&probe.probe_url, base_folder_url, false)?;
+	let llms_formatted = apply_fetch_format(
+		&origin_llms_relative_path,
+		Some("text/plain"),
+		&probe.body,
+		request.common.format,
+	)?;
+	let llms_relative_path = llms_formatted.relative_path;
 	let llms_artifact_path = artifact_root.join(&llms_relative_path);
-	ensure_parent(&llms_artifact_path)?;
-	write(llms_artifact_path.as_std_path(), &probe.body)
+	write_fetch_artifact(&llms_artifact_path, &llms_formatted.bytes)
 		.map_err(|err| Error::MalformedState(format!("failed to write llms.txt artifact: {err}")))?;
 
 	let llms_artifact_path_str = path_to_string(&llms_artifact_path)?;
@@ -278,10 +316,12 @@ async fn execute_llms_fetch(
 	manifest_items.push(FetchManifestItem {
 		source: probe.probe_url.as_str().to_owned(),
 		relative_path: llms_relative_path.clone(),
+		origin_relative_path: origin_llms_relative_path,
 		local_path: llms_artifact_path_str.clone(),
 		artifact_path: Some(llms_artifact_path_str),
 		media_type: Some("text/plain".to_owned()),
 		content_hash: llms_hash.clone(),
+		artifact_hash: hash_bytes(&llms_formatted.bytes),
 	});
 	artifacts.push(ArtifactItem {
 		source: probe.probe_url.as_str().to_owned(),
@@ -296,7 +336,9 @@ async fn execute_llms_fetch(
 	});
 
 	let mut seen_relative_paths = HashSet::new();
-	seen_relative_paths.insert(llms_relative_path);
+	seen_relative_paths.insert(llms_relative_path.clone());
+	let mut stored_paths = HashSet::new();
+	stored_paths.insert(llms_relative_path);
 
 	let mut candidates = Vec::new();
 	for entry_url in probe.entries {
@@ -327,6 +369,7 @@ async fn execute_llms_fetch(
 		}
 	}
 
+	let format = request.common.format;
 	let mut tasks = Vec::with_capacity(candidates.len());
 	for (url, _relative_path) in candidates {
 		let permit = semaphore
@@ -339,7 +382,7 @@ async fn execute_llms_fetch(
 
 		let task = tokio::spawn(async move {
 			let _permit = permit;
-			fetch_single_url_with_options(&client, &url, &base_folder, false).await
+			fetch_single_url_with_options(&client, &url, &base_folder, false, format).await
 		});
 		tasks.push(task);
 	}
@@ -351,8 +394,36 @@ async fn execute_llms_fetch(
 
 		match fetch_outcome {
 			Ok(fetched) => {
-				let relative_path = fetched.relative_path;
+				let relative_path = fetched.relative_path.clone();
+				let origin_relative_path = fetched.origin_relative_path.clone();
 				let source_url = fetched.url.as_str().to_owned();
+
+				if !stored_paths.insert(relative_path.clone()) {
+					let failure = ProcessFailure {
+						item: ProcessItem {
+							source: relative_path.clone(),
+							output_path: None,
+							stage: ProcessStage::Fetch,
+							usage: None,
+						},
+						message: format!("multiple input artifacts resolve to fetch path {relative_path}"),
+					};
+					let artifact_path = artifact_root.join(&relative_path);
+					manifest_items.push(FetchManifestItem {
+						source: source_url,
+						relative_path: relative_path.clone(),
+						origin_relative_path,
+						local_path: path_to_string(&artifact_path).unwrap_or_default(),
+						artifact_path: None,
+						media_type: fetched.media_type.clone(),
+						content_hash: fetched.content_hash.clone(),
+						artifact_hash: fetched.artifact_hash.clone(),
+					});
+					failures.push(failure.clone());
+					context.progress.publish(ProcessProgress::ItemFailed { failure });
+					continue;
+				}
+
 				let artifact_path = artifact_root.join(&relative_path);
 
 				if let Err(err) = ensure_parent(&artifact_path) {
@@ -370,7 +441,7 @@ async fn execute_llms_fetch(
 					continue;
 				}
 
-				if let Err(err) = write(artifact_path.as_std_path(), &fetched.body) {
+				if let Err(err) = write_fetch_artifact(&artifact_path, &fetched.body) {
 					let failure = ProcessFailure {
 						item: ProcessItem {
 							source: relative_path.clone(),
@@ -384,10 +455,12 @@ async fn execute_llms_fetch(
 					manifest_items.push(FetchManifestItem {
 						source: source_url,
 						relative_path: relative_path.clone(),
+						origin_relative_path: origin_relative_path.clone(),
 						local_path: artifact_path_str.clone().unwrap_or_default(),
 						artifact_path: None,
-						media_type: fetched.media_type,
-						content_hash: fetched.content_hash,
+						media_type: fetched.media_type.clone(),
+						content_hash: fetched.content_hash.clone(),
+						artifact_hash: fetched.artifact_hash.clone(),
 					});
 					failures.push(failure.clone());
 					context.progress.publish(ProcessProgress::ItemFailed { failure });
@@ -405,10 +478,12 @@ async fn execute_llms_fetch(
 				manifest_items.push(FetchManifestItem {
 					source: source_url,
 					relative_path: relative_path.clone(),
+					origin_relative_path,
 					local_path: artifact_path_str.clone(),
 					artifact_path: Some(artifact_path_str),
 					media_type: fetched.media_type.clone(),
 					content_hash: fetched.content_hash.clone(),
+					artifact_hash: fetched.artifact_hash.clone(),
 				});
 
 				artifacts.push(ArtifactItem {
@@ -416,7 +491,7 @@ async fn execute_llms_fetch(
 					relative_path: relative_path.clone(),
 					local_path: artifact_path,
 					media_type: fetched.media_type.clone(),
-					source_hash: Some(fetched.content_hash),
+					source_hash: Some(fetched.artifact_hash),
 				});
 
 				completed_items.push(process_item.clone());
@@ -482,18 +557,23 @@ pub(crate) fn validate_web_source(source: &WebContentSource) -> Result<()> {
 
 struct FetchedHttpResource {
 	url: Url,
+	origin_relative_path: String,
 	relative_path: String,
 	body: Vec<u8>,
+	source_body: Vec<u8>,
+	source_media_type: Option<String>,
 	media_type: Option<String>,
 	content_hash: String,
+	artifact_hash: String,
 }
 
 async fn fetch_single_url(
 	client: &WebClient,
 	url: &Url,
 	base_folder_url: &Url,
+	format: FetchFormat,
 ) -> core::result::Result<FetchedHttpResource, (Url, String)> {
-	fetch_single_url_with_options(client, url, base_folder_url, true).await
+	fetch_single_url_with_options(client, url, base_folder_url, true, format).await
 }
 
 async fn fetch_single_url_with_options(
@@ -501,8 +581,9 @@ async fn fetch_single_url_with_options(
 	url: &Url,
 	base_folder_url: &Url,
 	default_html: bool,
+	format: FetchFormat,
 ) -> core::result::Result<FetchedHttpResource, (Url, String)> {
-	let relative_path = match url_to_relative_path_with_options(url, base_folder_url, default_html) {
+	let origin_relative_path = match url_to_relative_path_with_options(url, base_folder_url, default_html) {
 		Ok(path) => path,
 		Err(err) => return Err((url.clone(), err.to_string())),
 	};
@@ -527,9 +608,9 @@ async fn fetch_single_url_with_options(
 		.filter(|val| !val.is_empty());
 
 	let media_type = header_media_type
-		.or_else(|| media_type_for(Path::new(&relative_path)))
+		.or_else(|| media_type_for(Path::new(&origin_relative_path)))
 		.or_else(|| {
-			if relative_path.ends_with(".html") || relative_path.ends_with(".htm") {
+			if origin_relative_path.ends_with(".html") || origin_relative_path.ends_with(".htm") {
 				Some("text/html".to_owned())
 			} else {
 				None
@@ -542,13 +623,22 @@ async fn fetch_single_url_with_options(
 	};
 
 	let content_hash = hash_bytes(&bytes);
+	let formatted = match apply_fetch_format(&origin_relative_path, media_type.as_deref(), &bytes, format) {
+		Ok(formatted) => formatted,
+		Err(err) => return Err((url.clone(), err.to_string())),
+	};
+	let artifact_hash = hash_bytes(&formatted.bytes);
 
 	Ok(FetchedHttpResource {
 		url: url.clone(),
-		relative_path,
-		body: bytes,
-		media_type,
+		origin_relative_path,
+		relative_path: formatted.relative_path,
+		body: formatted.bytes,
+		source_body: bytes,
+		source_media_type: media_type,
+		media_type: formatted.media_type,
 		content_hash,
+		artifact_hash,
 	})
 }
 
@@ -1079,8 +1169,7 @@ https://docs.typesafe.ai/doc/page2.md#anchor
 			destination: dest.clone(),
 			fetch_cache: fetch_cache.clone(),
 			sanitize_output: dest.join(".tmp-zmapr/stages/sanitize"),
-			ai_augment_output: dest.join(".tmp-zmapr/stages/ai-augment"),
-				mapper_output: dest.join(".tmp-zmapr/02-map"),
+			sanitize_manifest: dest.join(".tmp-zmapr/sanitize-manifest.json"),
 			manifest: manifest.clone(),
 			journal: dest.join(".tmp-zmapr/content-map.journal.jsonl"),
 			content_map: dest.join("content-map.json"),
@@ -1097,8 +1186,8 @@ https://docs.typesafe.ai/doc/page2.md#anchor
 		assert!(stage_output.failures.is_empty());
 		assert_eq!(stage_output.artifacts.items.len(), 2);
 
-		let index_artifact = fetch_cache.join("index.html");
-		let page1_artifact = fetch_cache.join("page1.html");
+		let index_artifact = fetch_cache.join("index.md");
+		let page1_artifact = fetch_cache.join("page1.md");
 		assert!(index_artifact.is_file());
 		assert!(page1_artifact.is_file());
 		assert!(manifest.is_file());

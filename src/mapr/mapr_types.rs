@@ -39,8 +39,6 @@ pub struct FolderMapEntry {
 pub struct FileMapMetadata {
 	pub last_modified_unix_nanos: Option<u64>,
 	pub source_hash: String,
-	pub prepared_path: String,
-	pub prepared_hash: String,
 }
 
 /// Serialized document written to `content-map.json`, carrying provenance metadata.

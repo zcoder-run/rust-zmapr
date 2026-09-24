@@ -1,14 +1,11 @@
 // region:    --- Modules
 
-mod ai_augment_options;
-mod content_map_options;
+mod fetch_format;
 mod process_content_options;
-mod sanitize_options;
+mod sanitize_prompt;
 
-pub use crate::fetchr::FetchRequest;
-pub use ai_augment_options::*;
-pub use content_map_options::*;
+pub use fetch_format::*;
 pub use process_content_options::*;
-pub use sanitize_options::*;
+pub use sanitize_prompt::*;
 
 // endregion: --- Modules

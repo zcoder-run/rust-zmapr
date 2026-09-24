@@ -1,14 +1,15 @@
-use super::pipeline::{StageOutput, WorkflowContext, run_pipeline};
+use super::pipeline::{StageOutput, WorkflowContext, build_fetch_request, run_pipeline};
 use super::progress::{ProcessProgressPublisher, new_completion_channel, new_progress_channel};
 use super::response::{ProcessContentHandle, ProcessContentOutput};
 use super::state::{ProcessQuery, new_process_state};
 use crate::fetchr::{FetchRequest, validate_source, validate_web_source};
-use crate::{ContentSource, Error, ProcessContentOptions, ProcessStage, Result};
+use crate::{ContentSource, Error, ProcessContentOptions, ProcessStage, Result, SanitizePrompt};
 use simple_fs::SPath;
 
 pub async fn process_content(options: ProcessContentOptions) -> Result<ProcessContentHandle> {
-	let layout = validate_request(&options)?;
-	let source = resolve_source(&options, &layout);
+	let fetch_request = build_fetch_request(&options);
+	let layout = validate_request(&options, fetch_request.as_ref())?;
+	let source = resolve_source(&options, fetch_request.as_ref(), &layout);
 	let (progress_tx, progress_rx) = new_progress_channel()?;
 	let state = new_process_state();
 	let query = ProcessQuery::new(state.clone());
@@ -18,8 +19,7 @@ pub async fn process_content(options: ProcessContentOptions) -> Result<ProcessCo
 		destination: layout.destination,
 		fetch_cache: layout.fetch_cache,
 		sanitize_output: layout.sanitize_output,
-		ai_augment_output: layout.ai_augment_output,
-		mapper_output: layout.mapper_output,
+		sanitize_manifest: layout.sanitize_manifest,
 		manifest: layout.manifest,
 		journal: layout.journal,
 		content_map: layout.content_map,
@@ -30,7 +30,7 @@ pub async fn process_content(options: ProcessContentOptions) -> Result<ProcessCo
 	let (completion_tx, completion_rx) = new_completion_channel();
 	let handle = ProcessContentHandle::new(progress_rx, completion_rx, query);
 	tokio::spawn(async move {
-		let completion = run_pipeline(&context, &options)
+		let completion = run_pipeline(&context, &options, fetch_request.as_ref())
 			.await
 			.map(|output| process_content_output(&context, &options, output));
 		let _ = completion_tx.send(completion);
@@ -45,8 +45,7 @@ struct WorkflowLayout {
 	destination: SPath,
 	fetch_cache: SPath,
 	sanitize_output: SPath,
-	ai_augment_output: SPath,
-	mapper_output: SPath,
+	sanitize_manifest: SPath,
 	manifest: SPath,
 	journal: SPath,
 	content_map: SPath,
@@ -62,7 +61,7 @@ fn process_content_output(
 		destination: context.destination.clone(),
 		manifest_path: context.manifest.is_file().then(|| context.manifest.clone()),
 		content_root: output.artifacts.root,
-		content_map_path: (options.content_map.is_some() && context.content_map.is_file())
+		content_map_path: (options.map && context.content_map.is_file())
 			.then(|| context.content_map.clone()),
 		completed_items: output.completed_items,
 		skipped_items: output.skipped_items,
@@ -71,12 +70,8 @@ fn process_content_output(
 	}
 }
 
-fn validate_request(options: &ProcessContentOptions) -> Result<WorkflowLayout> {
-	if options.fetch.is_none()
-		&& options.sanitize.is_none()
-		&& options.ai_augment.is_none()
-		&& options.content_map.is_none()
-	{
+fn validate_request(options: &ProcessContentOptions, fetch_request: Option<&FetchRequest>) -> Result<WorkflowLayout> {
+	if options.source.is_none() && !options.sanitize && !options.map {
 		return Err(Error::InvalidConfiguration(
 			"at least one processing stage must be enabled".into(),
 		));
@@ -88,7 +83,7 @@ fn validate_request(options: &ProcessContentOptions) -> Result<WorkflowLayout> {
 		));
 	}
 
-	if let Some(fetch) = &options.fetch {
+	if let Some(fetch) = fetch_request {
 		match fetch {
 			FetchRequest::Local(local_request) => {
 				validate_source(&local_request.source)?;
@@ -99,37 +94,33 @@ fn validate_request(options: &ProcessContentOptions) -> Result<WorkflowLayout> {
 		}
 	}
 
-	if let Some(ai_augment) = &options.ai_augment {
-		validate_ai_configuration(ProcessStage::AiAugment, &ai_augment.provider, &ai_augment.model)?;
+	if options.sanitize {
+		validate_model(ProcessStage::Sanitize, options.resolved_sanitize_model())?;
+		if let Some(prompt) = &options.sanitize_prompt {
+			match prompt {
+				SanitizePrompt::FilePath(path) if !path.is_file() => {
+					return Err(Error::InvalidConfiguration(format!(
+						"Sanitize prompt file does not exist: {path}"
+					)));
+				}
+				SanitizePrompt::Content(content) if content.trim().is_empty() => {
+					return Err(Error::InvalidConfiguration(
+						"Sanitize prompt content must not be empty".to_owned(),
+					));
+				}
+				_ => {}
+			}
+		}
 	}
 
-	if let Some(content_map) = &options.content_map {
-		if content_map.model.trim().is_empty() {
-			return Err(Error::InvalidConfiguration(format!(
-				"{:?} requires a nonempty model",
-				ProcessStage::AiContentMap
-			)));
-		}
-		if let Some(max_size) = content_map.max_size
-			&& max_size == 0
-		{
-			return Err(Error::InvalidConfiguration(
-				"content_map.max_size must be greater than zero".into(),
-			));
-		}
-		if let Some(max_cost) = content_map.max_cost
-			&& (max_cost < 0.0 || max_cost.is_nan())
-		{
-			return Err(Error::InvalidConfiguration(
-				"content_map.max_cost must be non-negative".into(),
-			));
-		}
+	if options.map {
+		validate_model(ProcessStage::Map, options.resolved_map_model())?;
 	}
 
 	let layout = resolve_layout(options);
 
-	if options.fetch.is_none()
-		&& (options.sanitize.is_some() || options.ai_augment.is_some() || options.content_map.is_some())
+	if options.source.is_none()
+		&& (options.sanitize || options.map)
 		&& !layout.fetch_cache.is_dir()
 		&& !layout.manifest.is_file()
 	{
@@ -142,11 +133,16 @@ fn validate_request(options: &ProcessContentOptions) -> Result<WorkflowLayout> {
 	Ok(layout)
 }
 
-fn resolve_source(options: &ProcessContentOptions, layout: &WorkflowLayout) -> Option<ContentSource> {
-	match &options.fetch {
+fn resolve_source(
+	options: &ProcessContentOptions,
+	fetch_request: Option<&FetchRequest>,
+	layout: &WorkflowLayout,
+) -> Option<ContentSource> {
+	match fetch_request {
 		Some(FetchRequest::Local(local_request)) => Some(ContentSource::LocalPath(local_request.source.clone())),
 		Some(FetchRequest::Web(web_request)) => Some(ContentSource::Web(web_request.source.clone())),
-		None => read_prior_manifest_source(&layout.manifest),
+		None if options.source.is_none() => read_prior_manifest_source(&layout.manifest),
+		None => None,
 	}
 }
 
@@ -161,10 +157,10 @@ fn read_prior_manifest_source(manifest_path: &SPath) -> Option<ContentSource> {
 	}
 }
 
-fn validate_ai_configuration(stage: ProcessStage, provider: &str, model: &str) -> Result<()> {
-	if provider.trim().is_empty() || model.trim().is_empty() {
+fn validate_model(stage: ProcessStage, model: Option<&str>) -> Result<()> {
+	if model.is_none_or(|model| model.trim().is_empty()) {
 		return Err(Error::InvalidConfiguration(format!(
-			"{stage:?} requires a nonempty provider and model"
+			"{stage:?} requires a nonempty model"
 		)));
 	}
 
@@ -178,9 +174,8 @@ fn resolve_layout(options: &ProcessContentOptions) -> WorkflowLayout {
 	WorkflowLayout {
 		destination,
 		fetch_cache: metadata_root.join("01-fetch"),
-		sanitize_output: metadata_root.join("stages/sanitize"),
-		ai_augment_output: metadata_root.join("stages/ai-augment"),
-		mapper_output: metadata_root.join("02-map"),
+		sanitize_output: metadata_root.join("02-sanitize"),
+		sanitize_manifest: metadata_root.join("sanitize-manifest.json"),
 		manifest: metadata_root.join("manifest.json"),
 		journal: metadata_root.join("content-map.journal.jsonl"),
 		content_map: options.destination.join("content-map.json"),

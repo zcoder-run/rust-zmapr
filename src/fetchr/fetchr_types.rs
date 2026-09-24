@@ -1,25 +1,20 @@
-use crate::process::{LocalContentSource, WebContentSource};
+use crate::process::{FetchFormat, LocalContentSource, WebContentSource};
 use serde::{Deserialize, Serialize};
 use simple_fs::SPath;
 
 // region:    --- Types
 
 #[derive(Debug, Clone, Default)]
-pub struct FetchCommonOptions {
+pub(crate) struct FetchCommonOptions {
 	/// Glob patterns selecting files or web paths to include.
 	pub include: Vec<String>,
 	/// Glob patterns excluding otherwise selected content.
 	pub exclude: Vec<String>,
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct LocalFetchOptions {
-	/// Copies selected local files into the deterministic cache.
-	pub copy_local_files: bool,
+	pub format: FetchFormat,
 }
 
 #[derive(Debug, Clone)]
-pub struct WebFetchOptions {
+pub(crate) struct WebFetchOptions {
 	/// Restricts web crawling to the source host.
 	pub same_host_only: bool,
 	/// Enables discovery of linked web pages.
@@ -73,13 +68,6 @@ impl FetchCommonOptions {
 	}
 }
 
-impl LocalFetchOptions {
-	pub fn with_copy_local_files(mut self, copy_local_files: bool) -> Self {
-		self.copy_local_files = copy_local_files;
-		self
-	}
-}
-
 impl WebFetchOptions {
 	pub fn with_same_host_only(mut self, same_host_only: bool) -> Self {
 		self.same_host_only = same_host_only;
@@ -107,10 +95,9 @@ impl WebFetchOptions {
 }
 
 #[derive(Debug, Clone)]
-pub struct LocalFetchRequest {
+pub(crate) struct LocalFetchRequest {
 	pub source: LocalContentSource,
 	pub common: FetchCommonOptions,
-	pub options: LocalFetchOptions,
 }
 
 impl LocalFetchRequest {
@@ -118,12 +105,11 @@ impl LocalFetchRequest {
 		Self {
 			source: LocalContentSource::new(path),
 			common: FetchCommonOptions::default(),
-			options: LocalFetchOptions::default(),
 		}
 	}
 
-	pub fn with_copy_local_files(mut self, copy_local_files: bool) -> Self {
-		self.options.copy_local_files = copy_local_files;
+	pub fn with_format(mut self, format: FetchFormat) -> Self {
+		self.common.format = format;
 		self
 	}
 
@@ -159,7 +145,7 @@ impl LocalFetchRequest {
 }
 
 #[derive(Debug, Clone)]
-pub struct WebFetchRequest {
+pub(crate) struct WebFetchRequest {
 	pub source: WebContentSource,
 	pub common: FetchCommonOptions,
 	pub options: WebFetchOptions,
@@ -186,6 +172,11 @@ impl WebFetchRequest {
 
 	pub fn with_max_depth(mut self, max_depth: usize) -> Self {
 		self.options.max_depth = max_depth;
+		self
+	}
+
+	pub fn with_format(mut self, format: FetchFormat) -> Self {
+		self.common.format = format;
 		self
 	}
 
@@ -226,7 +217,7 @@ impl WebFetchRequest {
 }
 
 #[derive(Debug, Clone)]
-pub enum FetchRequest {
+pub(crate) enum FetchRequest {
 	Local(LocalFetchRequest),
 	Web(WebFetchRequest),
 }
@@ -247,7 +238,7 @@ pub(crate) struct LocalFetchItem {
 	pub(crate) content_hash: String,
 }
 
-pub(crate) const FETCH_MANIFEST_VERSION: u32 = 3;
+pub(crate) const FETCH_MANIFEST_VERSION: u32 = 4;
 
 #[derive(Debug, Deserialize, Serialize)]
 pub(crate) struct FetchManifest {
@@ -266,13 +257,12 @@ pub(crate) enum FetchManifestOptions {
 	Local {
 		include: Vec<String>,
 		exclude: Vec<String>,
-		copy_local_files: bool,
+		format: FetchFormat,
 	},
 	Web {
 		include: Vec<String>,
 		exclude: Vec<String>,
-		same_host_only: bool,
-		follow_links: bool,
+		format: FetchFormat,
 		max_depth: usize,
 		llms: Option<bool>,
 	},
@@ -282,10 +272,12 @@ pub(crate) enum FetchManifestOptions {
 pub(crate) struct FetchManifestItem {
 	pub(crate) source: String,
 	pub(crate) relative_path: String,
+	pub(crate) origin_relative_path: String,
 	pub(crate) local_path: String,
 	pub(crate) artifact_path: Option<String>,
 	pub(crate) media_type: Option<String>,
 	pub(crate) content_hash: String,
+	pub(crate) artifact_hash: String,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -315,7 +307,7 @@ impl From<&LocalFetchRequest> for FetchManifestOptions {
 		Self::Local {
 			include: request.common.include.clone(),
 			exclude: request.common.exclude.clone(),
-			copy_local_files: request.options.copy_local_files,
+			format: request.common.format,
 		}
 	}
 }
@@ -325,8 +317,7 @@ impl From<&WebFetchRequest> for FetchManifestOptions {
 		Self::Web {
 			include: request.common.include.clone(),
 			exclude: request.common.exclude.clone(),
-			same_host_only: request.options.same_host_only,
-			follow_links: request.options.follow_links,
+			format: request.common.format,
 			max_depth: request.options.max_depth,
 			llms: request.options.llms,
 		}
@@ -356,7 +347,6 @@ mod tests {
 	fn test_fetchr_types_local_request_chaining() -> Result<()> {
 		// -- Setup & Fixtures
 		let request = LocalFetchRequest::new("src")
-			.with_copy_local_files(true)
 			.with_include(["*.rs"])
 			.append_include("*.md")
 			.append_includes(["*.txt", "*.json"])
@@ -366,7 +356,6 @@ mod tests {
 
 		// -- Check
 		assert_eq!(request.source.path.to_string(), "src");
-		assert!(request.options.copy_local_files);
 		assert_eq!(request.common.include, vec!["*.rs", "*.md", "*.txt", "*.json"]);
 		assert_eq!(request.common.exclude, vec!["**/target/**", "**/tmp/**", "**/dist/**"]);
 
@@ -488,7 +477,6 @@ mod tests {
 	fn test_fetchr_types_manifest_options_serde_tagged_representation() -> Result<()> {
 		// -- Setup & Fixtures
 		let local_req = LocalFetchRequest::new("src")
-			.with_copy_local_files(true)
 			.with_include(["*.rs"])
 			.with_exclude(["target/**"]);
 		let local_options = FetchManifestOptions::from(&local_req);
@@ -510,7 +498,7 @@ mod tests {
 
 		// -- Check
 		assert!(local_json.contains(r#""type":"local""#));
-		assert!(local_json.contains(r#""copy_local_files":true"#));
+		assert!(local_json.contains(r#""format":"markdown""#));
 		assert_eq!(local_deserialized, local_options);
 
 		assert!(web_json.contains(r#""type":"web""#));

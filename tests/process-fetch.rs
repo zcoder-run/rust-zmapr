@@ -3,8 +3,7 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 use serde_json::json;
 use zmapr::{
-	AiAugmentOptions, ContentMapOptions, Error, LocalFetchRequest, ProcessContentOptions, ProcessProgress,
-	ProcessStage, WebFetchRequest, process_content,
+	Error, FetchFormat, ProcessContentOptions, ProcessProgress, ProcessStage, process_content,
 };
 
 type Result<T> = core::result::Result<T, Box<dyn std::error::Error>>; // For tests.
@@ -18,7 +17,7 @@ async fn test_process_fetch_local_file_returns_output_and_progress() -> Result<(
 	let destination = root.join("destination");
 
 	// -- Exec
-	let mut handle = process_content(local_fetch_options(&source_path, &destination, false, false)).await?;
+	let mut handle = process_content(local_fetch_options(&source_path, &destination, false)).await?;
 	let _progress_rx = handle.take_progress_rx().ok_or("Fetch should provide a progress receiver")?;
 	let output = handle.wait_output().await?;
 
@@ -34,16 +33,17 @@ async fn test_process_fetch_local_file_returns_output_and_progress() -> Result<(
 	assert_eq!(item.source, "guide.md");
 	assert_eq!(item.stage, ProcessStage::Fetch);
 
+	let expected_fetch_root = destination.join(".tmp-zmapr").join("01-fetch");
 	let output_path = item
 		.output_path
 		.as_ref()
-		.ok_or("non-copying Fetch should retain an output path")?;
+		.ok_or("Fetch should publish an output path")?;
 	let output_path: &Path = output_path.as_ref();
-	assert_eq!(output_path, source_path.as_path());
+	assert_eq!(output_path, expected_fetch_root.join("guide.md").as_path());
 	assert_eq!(fs::read(output_path)?, b"# Guide\n".to_vec());
 
 	let content_root: &Path = output.content_root.as_ref();
-	assert_eq!(content_root, source_path.as_path());
+	assert_eq!(content_root, expected_fetch_root.as_path());
 
 	let manifest_path = output.manifest_path.as_ref().ok_or("Fetch should publish a manifest")?;
 	assert!(manifest_path.is_file());
@@ -70,7 +70,7 @@ async fn test_process_fetch_copies_directory_artifacts_and_publishes_manifest() 
 	let destination = root.join("destination");
 
 	// -- Exec
-	let handle = process_content(local_fetch_options(&source_root, &destination, true, false)).await?;
+	let handle = process_content(local_fetch_options(&source_root, &destination, false)).await?;
 	let output = handle.wait_output().await?;
 
 	// -- Check
@@ -131,7 +131,7 @@ async fn test_process_fetch_resume_reuses_and_rebuilds_state() -> Result<()> {
 	let destination = root.join("destination");
 
 	// -- Exec
-	let first_handle = process_content(local_fetch_options(&source_path, &destination, true, false)).await?;
+	let first_handle = process_content(local_fetch_options(&source_path, &destination, false)).await?;
 	let first_output = first_handle.wait_output().await?;
 
 	// -- Check
@@ -158,7 +158,7 @@ async fn test_process_fetch_resume_reuses_and_rebuilds_state() -> Result<()> {
 	let original_manifest = fs::read(&manifest_path)?;
 	let original_hash = manifest_hash(&manifest_path)?;
 
-	let second_handle = process_content(local_fetch_options(&source_path, &destination, true, true)).await?;
+	let second_handle = process_content(local_fetch_options(&source_path, &destination, true)).await?;
 	let second_output = second_handle.wait_output().await?;
 	assert!(second_output.completed_items.is_empty());
 	assert_eq!(second_output.skipped_items.len(), 1);
@@ -166,7 +166,7 @@ async fn test_process_fetch_resume_reuses_and_rebuilds_state() -> Result<()> {
 
 	fs::remove_file(&artifact_path)?;
 
-	let third_handle = process_content(local_fetch_options(&source_path, &destination, true, true)).await?;
+	let third_handle = process_content(local_fetch_options(&source_path, &destination, true)).await?;
 	let third_output = third_handle.wait_output().await?;
 	assert_eq!(third_output.completed_items.len(), 1);
 	assert!(third_output.skipped_items.is_empty());
@@ -174,7 +174,7 @@ async fn test_process_fetch_resume_reuses_and_rebuilds_state() -> Result<()> {
 
 	fs::write(&source_path, b"changed\n")?;
 
-	let fourth_handle = process_content(local_fetch_options(&source_path, &destination, true, true)).await?;
+	let fourth_handle = process_content(local_fetch_options(&source_path, &destination, true)).await?;
 	let fourth_output = fourth_handle.wait_output().await?;
 	assert_eq!(fourth_output.completed_items.len(), 1);
 	assert!(fourth_output.skipped_items.is_empty());
@@ -192,7 +192,7 @@ async fn test_process_fetch_resume_rebuilds_legacy_cache_layout() -> Result<()> 
 	fs::write(&source_path, b"source\n")?;
 	let destination = root.join("destination");
 
-	let first_handle = process_content(local_fetch_options(&source_path, &destination, true, false)).await?;
+	let first_handle = process_content(local_fetch_options(&source_path, &destination, false)).await?;
 	let first_output = first_handle.wait_output().await?;
 	let first_item = first_output
 		.completed_items
@@ -222,7 +222,7 @@ async fn test_process_fetch_resume_rebuilds_legacy_cache_layout() -> Result<()> 
 	fs::remove_file(&artifact_path)?;
 
 	// -- Exec
-	let second_handle = process_content(local_fetch_options(&source_path, &destination, true, true)).await?;
+	let second_handle = process_content(local_fetch_options(&source_path, &destination, true)).await?;
 	let second_output = second_handle.wait_output().await?;
 
 	// -- Check
@@ -261,7 +261,7 @@ async fn test_process_fetch_without_fetch_rejects_legacy_cache_layout() -> Resul
 	fs::create_dir_all(&metadata_root)?;
 
 	let manifest = json!({
-		"version": 3,
+		"version": 4,
 		"complete": true,
 		"source": path_text(&source_path),
 		"source_path": path_text(&source_path),
@@ -269,7 +269,7 @@ async fn test_process_fetch_without_fetch_rejects_legacy_cache_layout() -> Resul
 			"type": "local",
 			"include": [],
 			"exclude": [],
-			"copy_local_files": true
+			"format": "markdown"
 		},
 		"artifact_root": path_text(&legacy_fetch_cache),
 		"items": []
@@ -277,7 +277,8 @@ async fn test_process_fetch_without_fetch_rejects_legacy_cache_layout() -> Resul
 	fs::write(metadata_root.join("manifest.json"), serde_json::to_vec(&manifest)?)?;
 
 	let options = ProcessContentOptions::new(path_text(&destination))
-		.with_ai_augment(AiAugmentOptions::new("test-provider", "test-model"));
+		.with_sanitize(true)
+		.with_model("test-model");
 
 	// -- Exec
 	let handle = process_content(options).await?;
@@ -307,12 +308,12 @@ async fn test_process_fetch_binary_file_hashes_and_resumes() -> Result<()> {
 	let destination = root.join("destination");
 
 	// -- Exec
-	let first_handle = process_content(local_fetch_options(&source_path, &destination, true, false)).await?;
+	let first_handle = process_content(local_fetch_options(&source_path, &destination, false)).await?;
 	let first_output = first_handle.wait_output().await?;
 	let manifest_path = first_output.manifest_path.as_ref().ok_or("Fetch should publish a manifest")?;
 	let actual_hash = manifest_hash(manifest_path.as_std_path())?;
 
-	let second_handle = process_content(local_fetch_options(&source_path, &destination, true, true)).await?;
+	let second_handle = process_content(local_fetch_options(&source_path, &destination, true)).await?;
 	let second_output = second_handle.wait_output().await?;
 
 	// -- Check
@@ -343,7 +344,7 @@ async fn test_process_fetch_invalid_local_source_returns_structured_error() -> R
 	let destination = root.join("destination");
 
 	// -- Exec
-	let result = process_content(local_fetch_options(&missing_source, &destination, false, false)).await;
+	let result = process_content(local_fetch_options(&missing_source, &destination, false)).await;
 
 	// -- Check
 	let error = match result {
@@ -361,8 +362,7 @@ async fn test_process_fetch_web_source_invalid_url_returns_structured_error() ->
 	// -- Setup & Fixtures
 	let root = fixture_root("test_process_fetch_web_source_invalid_url_returns_structured_error")?;
 	let destination = root.join("destination");
-	let options = ProcessContentOptions::new(path_text(&destination))
-		.with_fetch(WebFetchRequest::new("not-a-valid-url").with_same_host_only(true));
+	let options = ProcessContentOptions::new(path_text(&destination)).with_source("not-a-valid-url");
 
 	// -- Exec
 	let result = process_content(options).await;
@@ -379,28 +379,17 @@ async fn test_process_fetch_web_source_invalid_url_returns_structured_error() ->
 }
 
 #[tokio::test]
-async fn test_process_fetch_deferred_ai_augment_remains_unsupported() -> Result<()> {
+async fn test_process_fetch_sanitize_without_model_returns_validation_error() -> Result<()> {
 	// -- Setup & Fixtures
-	let root = fixture_root("test_process_fetch_deferred_ai_augment_remains_unsupported")?;
-	let source_path = root.join("source.txt");
-	fs::write(&source_path, b"source\n")?;
+	let root = fixture_root("test_process_fetch_sanitize_without_model_returns_validation_error")?;
 	let destination = root.join("destination");
 
 	// -- Exec
-	let fetch_handle = process_content(local_fetch_options(&source_path, &destination, true, false)).await?;
-	let _ = fetch_handle.wait_output().await?;
+	let options = ProcessContentOptions::new(path_text(&destination)).with_sanitize(true);
+	let error = process_content(options).await.err().ok_or("Expected validation error")?;
 
-	// -- Exec & Check
-	let options = ProcessContentOptions::new(path_text(&destination))
-		.with_ai_augment(AiAugmentOptions::new("test-provider", "test-model"));
-	let handle = process_content(options).await?;
-	let result = handle.wait_output().await;
-	let error = match result {
-		Err(error) => error,
-		Ok(_) => return Err("deferred AI augment stage should not complete".into()),
-	};
-	assert!(matches!(error, Error::Unsupported(_)));
-
+	// -- Check
+	assert!(matches!(error, Error::InvalidConfiguration(_)));
 	Ok(())
 }
 
@@ -436,12 +425,9 @@ async fn test_process_fetch_web_crawls_and_reports_progress() -> Result<()> {
 	let destination = root.join("destination");
 	let start_url = format!("http://127.0.0.1:{port}/site/");
 
-	let options = ProcessContentOptions::new(path_text(&destination)).with_fetch(
-		WebFetchRequest::new(&start_url)
-			.with_follow_links(true)
-			.with_max_depth(2)
-			.with_same_host_only(true),
-	);
+	let options = ProcessContentOptions::new(path_text(&destination))
+		.with_source(&start_url)
+		.with_max_depth(2);
 
 	// -- Exec
 	let mut handle = process_content(options).await?;
@@ -469,14 +455,14 @@ async fn test_process_fetch_web_crawls_and_reports_progress() -> Result<()> {
 		.collect::<Vec<_>>();
 	assert_eq!(
 		completed_sources,
-		vec!["index.html", "page1.html", "page2.html", "sub/page3.html"]
+		vec!["index.md", "page1.md", "page2.md", "sub/page3.md"]
 	);
 
 	let fetch_dir = destination.join(".tmp-zmapr").join("01-fetch");
-	assert!(fetch_dir.join("index.html").is_file());
-	assert!(fetch_dir.join("page1.html").is_file());
-	assert!(fetch_dir.join("page2.html").is_file());
-	assert!(fetch_dir.join("sub/page3.html").is_file());
+	assert!(fetch_dir.join("index.md").is_file());
+	assert!(fetch_dir.join("page1.md").is_file());
+	assert!(fetch_dir.join("page2.md").is_file());
+	assert!(fetch_dir.join("sub/page3.md").is_file());
 
 	let manifest_path = output.manifest_path.as_ref().ok_or("Web fetch should publish a manifest")?;
 	assert!(manifest_path.is_file());
@@ -542,12 +528,9 @@ async fn test_process_fetch_web_respects_max_depth() -> Result<()> {
 	let destination = root.join("destination");
 	let start_url = format!("http://127.0.0.1:{port}/docs/");
 
-	let options = ProcessContentOptions::new(path_text(&destination)).with_fetch(
-		WebFetchRequest::new(&start_url)
-			.with_follow_links(true)
-			.with_max_depth(1)
-			.with_same_host_only(true),
-	);
+	let options = ProcessContentOptions::new(path_text(&destination))
+		.with_source(&start_url)
+		.with_max_depth(1);
 
 	// -- Exec
 	let handle = process_content(options).await?;
@@ -562,12 +545,12 @@ async fn test_process_fetch_web_respects_max_depth() -> Result<()> {
 		.iter()
 		.map(|item| item.source.as_str())
 		.collect::<Vec<_>>();
-	assert_eq!(completed_sources, vec!["index.html", "level1.html"]);
+	assert_eq!(completed_sources, vec!["index.md", "level1.md"]);
 
 	let fetch_dir = destination.join(".tmp-zmapr").join("01-fetch");
-	assert!(fetch_dir.join("index.html").is_file());
-	assert!(fetch_dir.join("level1.html").is_file());
-	assert!(!fetch_dir.join("level2.html").exists());
+	assert!(fetch_dir.join("index.md").is_file());
+	assert!(fetch_dir.join("level1.md").is_file());
+	assert!(!fetch_dir.join("level2.md").exists());
 
 	Ok(())
 }
@@ -589,12 +572,9 @@ async fn test_process_fetch_web_records_failures_for_broken_links() -> Result<()
 	let destination = root.join("destination");
 	let start_url = format!("http://127.0.0.1:{port}/site/");
 
-	let options = ProcessContentOptions::new(path_text(&destination)).with_fetch(
-		WebFetchRequest::new(&start_url)
-			.with_follow_links(true)
-			.with_max_depth(1)
-			.with_same_host_only(true),
-	);
+	let options = ProcessContentOptions::new(path_text(&destination))
+		.with_source(&start_url)
+		.with_max_depth(1);
 
 	// -- Exec
 	let handle = process_content(options).await?;
@@ -639,7 +619,8 @@ async fn test_process_fetch_web_llms_discovery_and_fetch() -> Result<()> {
 	let start_url = format!("http://127.0.0.1:{port}/site/");
 
 	let options = ProcessContentOptions::new(path_text(&destination))
-		.with_fetch(WebFetchRequest::new(&start_url).with_llms(true).with_same_host_only(true));
+		.with_source(&start_url)
+		.with_llms(true);
 
 	// -- Exec
 	let handle = process_content(options).await?;
@@ -699,13 +680,10 @@ async fn test_process_fetch_web_llms_fallback_on_missing() -> Result<()> {
 	let destination = root.join("destination");
 	let start_url = format!("http://127.0.0.1:{port}/site/");
 
-	let options = ProcessContentOptions::new(path_text(&destination)).with_fetch(
-		WebFetchRequest::new(&start_url)
-			.with_llms(true)
-			.with_follow_links(true)
-			.with_max_depth(1)
-			.with_same_host_only(true),
-	);
+	let options = ProcessContentOptions::new(path_text(&destination))
+		.with_source(&start_url)
+		.with_llms(true)
+		.with_max_depth(1);
 
 	// -- Exec
 	let handle = process_content(options).await?;
@@ -720,11 +698,11 @@ async fn test_process_fetch_web_llms_fallback_on_missing() -> Result<()> {
 		.iter()
 		.map(|item| item.source.as_str())
 		.collect::<Vec<_>>();
-	assert_eq!(completed_sources, vec!["index.html", "page1.html"]);
+	assert_eq!(completed_sources, vec!["index.md", "page1.md"]);
 
 	let fetch_dir = destination.join(".tmp-zmapr").join("01-fetch");
-	assert!(fetch_dir.join("index.html").is_file());
-	assert!(fetch_dir.join("page1.html").is_file());
+	assert!(fetch_dir.join("index.md").is_file());
+	assert!(fetch_dir.join("page1.md").is_file());
 
 	let manifest_path = output.manifest_path.as_ref().ok_or("Output should include a manifest")?;
 	let manifest: serde_json::Value = serde_json::from_str(&fs::read_to_string(manifest_path.as_std_path())?)?;
@@ -759,13 +737,10 @@ async fn test_process_fetch_web_llms_fallback_on_empty() -> Result<()> {
 	let destination = root.join("destination");
 	let start_url = format!("http://127.0.0.1:{port}/site/");
 
-	let options = ProcessContentOptions::new(path_text(&destination)).with_fetch(
-		WebFetchRequest::new(&start_url)
-			.with_llms(true)
-			.with_follow_links(true)
-			.with_max_depth(1)
-			.with_same_host_only(true),
-	);
+	let options = ProcessContentOptions::new(path_text(&destination))
+		.with_source(&start_url)
+		.with_llms(true)
+		.with_max_depth(1);
 
 	// -- Exec
 	let handle = process_content(options).await?;
@@ -780,11 +755,11 @@ async fn test_process_fetch_web_llms_fallback_on_empty() -> Result<()> {
 		.iter()
 		.map(|item| item.source.as_str())
 		.collect::<Vec<_>>();
-	assert_eq!(completed_sources, vec!["index.html", "page1.html"]);
+	assert_eq!(completed_sources, vec!["index.md", "page1.md"]);
 
 	let fetch_dir = destination.join(".tmp-zmapr").join("01-fetch");
-	assert!(fetch_dir.join("index.html").is_file());
-	assert!(fetch_dir.join("page1.html").is_file());
+	assert!(fetch_dir.join("index.md").is_file());
+	assert!(fetch_dir.join("page1.md").is_file());
 
 	Ok(())
 }
@@ -816,12 +791,9 @@ async fn test_process_fetch_web_extensionless_path_defaults_html() -> Result<()>
 	let destination = root.join("destination");
 	let start_url = format!("http://127.0.0.1:{port}/site/");
 
-	let options = ProcessContentOptions::new(path_text(&destination)).with_fetch(
-		WebFetchRequest::new(&start_url)
-			.with_follow_links(true)
-			.with_max_depth(2)
-			.with_same_host_only(true),
-	);
+	let options = ProcessContentOptions::new(path_text(&destination))
+		.with_source(&start_url)
+		.with_max_depth(2);
 
 	// -- Exec
 	let handle = process_content(options).await?;
@@ -838,15 +810,76 @@ async fn test_process_fetch_web_extensionless_path_defaults_html() -> Result<()>
 		.collect::<Vec<_>>();
 	assert_eq!(
 		completed_sources,
-		vec!["concepts/arch.html", "index.html", "intro.html"]
+		vec!["concepts/arch.md", "index.md", "intro.md"]
 	);
 
 	let fetch_dir = destination.join(".tmp-zmapr").join("01-fetch");
-	assert!(fetch_dir.join("index.html").is_file());
-	assert!(fetch_dir.join("intro.html").is_file());
-	assert!(fetch_dir.join("concepts").join("arch.html").is_file());
-	assert!(!fetch_dir.join("intro").exists());
-	assert!(!fetch_dir.join("concepts").join("arch").exists());
+	assert!(fetch_dir.join("index.md").is_file());
+	assert!(fetch_dir.join("intro.md").is_file());
+	assert!(fetch_dir.join("concepts").join("arch.md").is_file());
+	assert!(!fetch_dir.join("intro.html").exists());
+	assert!(!fetch_dir.join("concepts").join("arch.html").exists());
+
+	Ok(())
+}
+
+#[tokio::test]
+async fn test_process_fetch_local_html_formats_and_path_collisions() -> Result<()> {
+	// -- Setup & Fixtures
+	let root = fixture_root("test_process_fetch_local_html_formats_and_path_collisions")?;
+	let source_root = root.join("source");
+	fs::create_dir_all(&source_root)?;
+	fs::write(source_root.join("page.html"), "<html><body><h1>Page</h1></body></html>")?;
+	fs::write(source_root.join("page.md"), "# Existing Markdown\n")?;
+
+	// -- Exec
+	let markdown_destination = root.join("markdown");
+	let markdown_handle = process_content(
+		ProcessContentOptions::new(path_text(&markdown_destination)).with_source(path_text(&source_root)),
+	)
+	.await?;
+	let markdown_output = markdown_handle.wait_output().await?;
+
+	let raw_destination = root.join("raw");
+	let raw_handle = process_content(
+		ProcessContentOptions::new(path_text(&raw_destination))
+			.with_source(path_text(&source_root))
+			.with_format(FetchFormat::Raw),
+	)
+	.await?;
+	let raw_output = raw_handle.wait_output().await?;
+
+	let slim_destination = root.join("slim");
+	let slim_handle = process_content(
+		ProcessContentOptions::new(path_text(&slim_destination))
+			.with_source(path_text(&source_root))
+			.with_format(FetchFormat::Slim),
+	)
+	.await?;
+	let slim_output = slim_handle.wait_output().await?;
+
+	// -- Check
+	assert_eq!(markdown_output.failures.len(), 2);
+	assert!(markdown_output.failures.iter().all(|failure| {
+		failure.message.contains("multiple input artifacts resolve to fetch path page.md")
+	}));
+	assert!(!markdown_destination
+		.join(".tmp-zmapr")
+		.join("01-fetch")
+		.join("page.md")
+		.exists());
+
+	assert!(raw_output.failures.is_empty());
+	assert!(raw_destination
+		.join(".tmp-zmapr")
+		.join("01-fetch")
+		.join("page.html")
+		.is_file());
+
+	assert!(slim_output.failures.is_empty());
+	let slim_path = slim_destination.join(".tmp-zmapr").join("01-fetch").join("page.html");
+	assert!(slim_path.is_file());
+	assert!(fs::read_to_string(slim_path)?.contains("Page"));
 
 	Ok(())
 }
@@ -899,16 +932,10 @@ fn fixture_root(test_name: &str) -> Result<PathBuf> {
 	Ok(root)
 }
 
-fn local_fetch_options(
-	source_path: &Path,
-	destination: &Path,
-	copy_local_files: bool,
-	resume: bool,
-) -> ProcessContentOptions {
-	let mut options = ProcessContentOptions::new(path_text(destination))
-		.with_fetch(LocalFetchRequest::new(path_text(source_path)).with_copy_local_files(copy_local_files));
-	options.resume = resume;
-	options
+fn local_fetch_options(source_path: &Path, destination: &Path, resume: bool) -> ProcessContentOptions {
+	ProcessContentOptions::new(path_text(destination))
+		.with_source(path_text(source_path))
+		.with_resume(resume)
 }
 
 fn manifest_hash(path: &Path) -> Result<String> {

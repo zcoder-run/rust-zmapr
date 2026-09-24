@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use zmapr::{
-	ContentMapDocument, ContentMapOptions, LocalFetchRequest, MaprAiClient, MaprAiSelector, ProcessContentOptions,
+	ContentMapDocument, MaprAiClient, MaprAiSelector, ProcessContentOptions,
 	ProcessProgress, ProcessStage, process_content, set_active_ai_selector,
 };
 
@@ -27,12 +27,9 @@ async fn test_process_content_map_with_stub_publishes_output_and_content_map() -
 	let destination = root.join("destination");
 
 	let options = ProcessContentOptions::new(path_text(&destination))
-		.with_fetch(LocalFetchRequest::new(path_text(&source_root)).with_copy_local_files(true))
-		.with_content_map(
-			ContentMapOptions::new("stub-model")
-				.with_max_size(200_000)
-				.with_retain_journal(true),
-		);
+		.with_source(path_text(&source_root))
+		.with_map(true)
+		.with_model("stub-model");
 
 	// -- Exec
 	let mut handle = process_content(options).await?;
@@ -74,7 +71,7 @@ async fn test_process_content_map_with_stub_publishes_output_and_content_map() -
 	let mapr_completed = output
 		.completed_items
 		.iter()
-		.filter(|item| item.stage == ProcessStage::AiContentMap)
+		.filter(|item| item.stage == ProcessStage::Map)
 		.collect::<Vec<_>>();
 	assert_eq!(mapr_completed.len(), 2);
 	let mapr_completed_sources = mapr_completed.iter().map(|item| item.source.as_str()).collect::<Vec<_>>();
@@ -83,7 +80,7 @@ async fn test_process_content_map_with_stub_publishes_output_and_content_map() -
 	let mapr_skipped = output
 		.skipped_items
 		.iter()
-		.filter(|item| item.stage == ProcessStage::AiContentMap)
+		.filter(|item| item.stage == ProcessStage::Map)
 		.collect::<Vec<_>>();
 	assert_eq!(mapr_skipped.len(), 2);
 	let mapr_skipped_sources = mapr_skipped.iter().map(|item| item.source.as_str()).collect::<Vec<_>>();
@@ -106,19 +103,12 @@ async fn test_process_content_map_with_stub_publishes_output_and_content_map() -
 	assert!(document.file_map.contains_key("code.rs"));
 	assert_eq!(document.file_metadata.len(), 4);
 	assert!(!destination.join("content-map.md").exists());
-	let mapper_root = destination.join(".tmp-zmapr").join("02-map");
-	assert_eq!(fs::read(mapper_root.join("intro.md"))?, b"# Introduction\nWelcome.");
-	assert_eq!(fs::read(mapper_root.join("code.rs"))?, b"pub fn run() {}\n");
-	assert_eq!(fs::read(mapper_root.join("image.png"))?, b"PNG dummy image data");
-	assert_eq!(fs::metadata(mapper_root.join("oversize.txt"))?.len(), 300_000);
 	let intro_metadata = document
 		.file_metadata
 		.get("intro.md")
 		.ok_or("expected intro.md metadata")?;
 	assert!(intro_metadata.last_modified_unix_nanos.is_some());
-	assert_eq!(intro_metadata.prepared_path, "intro.md");
 	assert!(!intro_metadata.source_hash.is_empty());
-	assert!(!intro_metadata.prepared_hash.is_empty());
 	let intro_entry = document.file_map.get("intro.md").ok_or("expected intro.md entry")?;
 	assert_eq!(intro_entry.topics, vec!["stub".to_string(), "test".to_string()]);
 	assert!(document.folder_map.is_empty());
@@ -126,7 +116,7 @@ async fn test_process_content_map_with_stub_publishes_output_and_content_map() -
 	let mapr_completed_events = progress_events
 		.iter()
 		.filter_map(|ev| match ev {
-			ProcessProgress::ItemCompleted { item } if item.stage == ProcessStage::AiContentMap => Some(item),
+			ProcessProgress::ItemCompleted { item } if item.stage == ProcessStage::Map => Some(item),
 			_ => None,
 		})
 		.collect::<Vec<_>>();
@@ -161,7 +151,7 @@ async fn test_process_content_map_with_stub_publishes_output_and_content_map() -
 		matches!(
 			ev,
 			ProcessProgress::StageStarted {
-				stage: ProcessStage::AiContentMap
+			stage: ProcessStage::Map
 			}
 		)
 	});
@@ -169,7 +159,7 @@ async fn test_process_content_map_with_stub_publishes_output_and_content_map() -
 		matches!(
 			ev,
 			ProcessProgress::StageCompleted {
-				stage: ProcessStage::AiContentMap
+			stage: ProcessStage::Map
 			}
 		)
 	});
@@ -194,12 +184,9 @@ async fn test_process_content_map_journal_reuse_on_second_run() -> Result<()> {
 
 	let run_options = || {
 		ProcessContentOptions::new(path_text(&destination))
-			.with_fetch(LocalFetchRequest::new(path_text(&source_root)).with_copy_local_files(true))
-			.with_content_map(
-				ContentMapOptions::new("stub-model")
-					.with_reuse_unchanged_records(true)
-					.with_retain_journal(true),
-			)
+			.with_source(path_text(&source_root))
+			.with_map(true)
+			.with_model("stub-model")
 			.with_resume(true)
 	};
 
@@ -225,14 +212,12 @@ async fn test_process_content_map_journal_reuse_on_second_run() -> Result<()> {
 	let first_mapr_completed = first_output
 		.completed_items
 		.iter()
-		.filter(|item| item.stage == ProcessStage::AiContentMap)
+		.filter(|item| item.stage == ProcessStage::Map)
 		.count();
 	assert_eq!(first_mapr_completed, 1);
 
-	let mapper_copy = destination.join(".tmp-zmapr").join("02-map").join("intro.md");
 	let fetch_copy = destination.join(".tmp-zmapr").join("01-fetch").join("intro.md");
 	assert_eq!(fs::read(&fetch_copy)?, b"# Intro\nReused content.");
-	fs::remove_file(&mapper_copy)?;
 
 	// -- Exec: second run with unchanged source
 	let second_handle = process_content(run_options()).await?;
@@ -242,18 +227,17 @@ async fn test_process_content_map_journal_reuse_on_second_run() -> Result<()> {
 	let second_mapr_completed = second_output
 		.completed_items
 		.iter()
-		.filter(|item| item.stage == ProcessStage::AiContentMap)
+		.filter(|item| item.stage == ProcessStage::Map)
 		.count();
 	assert_eq!(second_mapr_completed, 0);
 
 	let second_mapr_skipped = second_output
 		.skipped_items
 		.iter()
-		.filter(|item| item.stage == ProcessStage::AiContentMap)
+		.filter(|item| item.stage == ProcessStage::Map)
 		.collect::<Vec<_>>();
 	assert_eq!(second_mapr_skipped.len(), 1);
 	assert_eq!(second_mapr_skipped[0].source, "intro.md");
-	assert_eq!(fs::read(&mapper_copy)?, b"# Intro\nReused content.");
 	assert_eq!(fs::read(&fetch_copy)?, b"# Intro\nReused content.");
 	assert_eq!(
 		fs::read(source_root.join("intro.md"))?,
@@ -274,9 +258,7 @@ async fn test_process_content_map_journal_reuse_on_second_run() -> Result<()> {
 		.file_metadata
 		.get("intro.md")
 		.ok_or("expected second intro.md metadata")?;
-	assert_eq!(second_metadata.prepared_path, first_metadata.prepared_path);
 	assert_eq!(second_metadata.source_hash, first_metadata.source_hash);
-	assert_eq!(second_metadata.prepared_hash, first_metadata.prepared_hash);
 
 	assert_eq!(second_output.total_usage, None);
 
@@ -298,12 +280,9 @@ async fn test_process_content_map_copies_html_as_markdown() -> Result<()> {
 	let destination = root.join("destination");
 
 	let options = ProcessContentOptions::new(path_text(&destination))
-		.with_fetch(LocalFetchRequest::new(path_text(&source_root)).with_copy_local_files(true))
-		.with_content_map(
-			ContentMapOptions::new("stub-model")
-				.with_to_md(true)
-				.with_retain_journal(true),
-		)
+		.with_source(path_text(&source_root))
+		.with_map(true)
+		.with_model("stub-model")
 		.with_resume(true);
 
 	// -- Exec
@@ -312,24 +291,18 @@ async fn test_process_content_map_copies_html_as_markdown() -> Result<()> {
 
 	// -- Check
 	assert!(output.failures.is_empty());
-	assert_eq!(
-		fs::read(destination.join(".tmp-zmapr").join("01-fetch").join("index.html"))?,
-		html.as_bytes()
-	);
-	let mapper_root = destination.join(".tmp-zmapr").join("02-map");
-	assert!(!mapper_root.join("index.html").exists());
-	let markdown = fs::read_to_string(mapper_root.join("index.md"))?;
+	let markdown = fs::read_to_string(destination.join(".tmp-zmapr").join("01-fetch").join("index.md"))?;
 	assert!(markdown.contains("Mapper copy"));
 	assert!(markdown.contains("Prepared Markdown."));
 
 	let content_map_path = output.content_map_path.as_ref().ok_or("expected content_map_path")?;
 	let document: ContentMapDocument = serde_json::from_slice(&fs::read(content_map_path.as_std_path())?)?;
-	assert!(document.file_map.contains_key("index.html"));
+	assert!(document.file_map.contains_key("index.md"));
 	let metadata = document
 		.file_metadata
-		.get("index.html")
+		.get("index.md")
 		.ok_or("expected HTML input metadata")?;
-	assert_eq!(metadata.prepared_path, "index.md");
+	assert!(!metadata.source_hash.is_empty());
 	let journal_file = destination.join(".tmp-zmapr").join("content-map.journal.jsonl");
 	let journal_content = fs::read_to_string(journal_file)?;
 	assert!(
@@ -337,42 +310,6 @@ async fn test_process_content_map_copies_html_as_markdown() -> Result<()> {
 			.lines()
 			.any(|line| line.contains(r#""path":"index.md""#))
 	);
-
-	set_active_ai_selector(None);
-	Ok(())
-}
-
-#[tokio::test]
-async fn test_process_content_map_rejects_converted_path_collisions() -> Result<()> {
-	let _guard = TEST_MUTEX.lock().await;
-	set_active_ai_selector(Some(MaprAiSelector::Stub));
-
-	// -- Setup & Fixtures
-	let root = fixture_root("test_process_content_map_rejects_converted_path_collisions")?;
-	let source_root = root.join("source");
-	fs::create_dir_all(&source_root)?;
-	fs::write(source_root.join("page.html"), "<html><body>HTML</body></html>")?;
-	fs::write(source_root.join("page.md"), "# Existing Markdown")?;
-	let destination = root.join("destination");
-
-	let options = ProcessContentOptions::new(path_text(&destination))
-		.with_fetch(LocalFetchRequest::new(path_text(&source_root)).with_copy_local_files(true))
-		.with_content_map(ContentMapOptions::new("stub-model").with_to_md(true));
-
-	// -- Exec
-	let handle = process_content(options).await?;
-	let output = handle.wait_output().await?;
-
-	// -- Check
-	assert_eq!(output.failures.len(), 2);
-	assert!(output.failures.iter().all(|failure| {
-		failure.message.contains("multiple input artifacts resolve to mapper path page.md")
-	}));
-	assert!(!destination
-		.join(".tmp-zmapr")
-		.join("02-map")
-		.join("page.md")
-		.exists());
 
 	set_active_ai_selector(None);
 	Ok(())
@@ -392,12 +329,9 @@ async fn test_process_content_map_publishes_recovered_entries_before_ai_work() -
 
 	let run_options = || {
 		ProcessContentOptions::new(path_text(&destination))
-			.with_fetch(LocalFetchRequest::new(path_text(&source_root)).with_copy_local_files(true))
-			.with_content_map(
-				ContentMapOptions::new("stub-model")
-					.with_reuse_unchanged_records(true)
-					.with_retain_journal(true),
-			)
+		.with_source(path_text(&source_root))
+		.with_map(true)
+		.with_model("stub-model")
 			.with_resume(true)
 	};
 
@@ -430,38 +364,7 @@ async fn test_process_content_map_publishes_recovered_entries_before_ai_work() -
 		.file_metadata
 		.get("intro.md")
 		.ok_or("expected recovered intro.md metadata")?;
-	assert!(!recovered_metadata.prepared_hash.is_empty());
-
-	set_active_ai_selector(None);
-	Ok(())
-}
-
-#[tokio::test]
-async fn test_process_content_map_retain_journal_false_removes_journal() -> Result<()> {
-	let _guard = TEST_MUTEX.lock().await;
-	set_active_ai_selector(Some(MaprAiSelector::Stub));
-
-	// -- Setup & Fixtures
-	let root = fixture_root("test_process_content_map_retain_journal_false_removes_journal")?;
-	let source_root = root.join("source");
-	fs::create_dir_all(&source_root)?;
-	fs::write(source_root.join("intro.md"), b"# Intro\nClean journal.")?;
-	let destination = root.join("destination");
-
-	let options = ProcessContentOptions::new(path_text(&destination))
-		.with_fetch(LocalFetchRequest::new(path_text(&source_root)).with_copy_local_files(true))
-		.with_content_map(ContentMapOptions::new("stub-model").with_retain_journal(false));
-
-	// -- Exec
-	let handle = process_content(options).await?;
-	let output = handle.wait_output().await?;
-
-	// -- Check
-	let content_map_path = output.content_map_path.as_ref().ok_or("expected content_map_path")?;
-	assert!(content_map_path.is_file());
-
-	let journal_file = destination.join(".tmp-zmapr").join("content-map.journal.jsonl");
-	assert!(!journal_file.exists());
+	assert!(!recovered_metadata.source_hash.is_empty());
 
 	set_active_ai_selector(None);
 	Ok(())
@@ -498,8 +401,9 @@ async fn test_process_content_map_item_failure_is_recorded_and_stage_completes()
 	let destination = root.join("destination");
 
 	let options = ProcessContentOptions::new(path_text(&destination))
-		.with_fetch(LocalFetchRequest::new(path_text(&source_root)).with_copy_local_files(true))
-		.with_content_map(ContentMapOptions::new("custom-model"));
+		.with_source(path_text(&source_root))
+		.with_map(true)
+		.with_model("custom-model");
 
 	// -- Exec
 	let handle = process_content(options).await?;
@@ -509,13 +413,13 @@ async fn test_process_content_map_item_failure_is_recorded_and_stage_completes()
 	assert_eq!(output.failures.len(), 1);
 	let failure = &output.failures[0];
 	assert_eq!(failure.item.source, "fail.md");
-	assert_eq!(failure.item.stage, ProcessStage::AiContentMap);
+	assert_eq!(failure.item.stage, ProcessStage::Map);
 	assert!(failure.message.contains("simulated AI provider failure"));
 
 	let mapr_completed = output
 		.completed_items
 		.iter()
-		.filter(|item| item.stage == ProcessStage::AiContentMap)
+		.filter(|item| item.stage == ProcessStage::Map)
 		.collect::<Vec<_>>();
 	assert_eq!(mapr_completed.len(), 1);
 	assert_eq!(mapr_completed[0].source, "good.md");
@@ -568,8 +472,9 @@ async fn test_process_content_map_exact_usage_and_journal_emptied() -> Result<()
 	let destination = root.join("destination");
 
 	let options = ProcessContentOptions::new(path_text(&destination))
-		.with_fetch(LocalFetchRequest::new(path_text(&source_root)).with_copy_local_files(true))
-		.with_content_map(ContentMapOptions::new("custom-model").with_retain_journal(true));
+		.with_source(path_text(&source_root))
+		.with_map(true)
+		.with_model("custom-model");
 
 	// -- Exec
 	let mut handle = process_content(options).await?;
@@ -593,7 +498,7 @@ async fn test_process_content_map_exact_usage_and_journal_emptied() -> Result<()
 	let completed_mapr_events = progress_events
 		.iter()
 		.filter_map(|ev| match ev {
-			ProcessProgress::ItemCompleted { item } if item.stage == ProcessStage::AiContentMap => Some(item),
+			ProcessProgress::ItemCompleted { item } if item.stage == ProcessStage::Map => Some(item),
 			_ => None,
 		})
 		.collect::<Vec<_>>();
@@ -639,10 +544,7 @@ impl MaprAiClient for PartialMapCheckingAiClient {
 			let Some(metadata) = document.file_metadata.get("intro.md") else {
 				return Err(zmapr::Error::custom("journal metadata was not published before AI processing"));
 			};
-			if metadata.prepared_path != "intro.md"
-				|| metadata.source_hash.is_empty()
-				|| metadata.prepared_hash.is_empty()
-			{
+			if metadata.source_hash.is_empty() {
 				return Err(zmapr::Error::custom("journal metadata is incomplete"));
 			}
 

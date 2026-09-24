@@ -1,6 +1,5 @@
 use crate::mapr::ContentMapDocument;
 use crate::{Error, Result};
-use htmlr::{SlimOptions, slim, to_md};
 use std::collections::BTreeSet;
 use std::fs::{create_dir_all, rename, write};
 use std::path::Path;
@@ -76,26 +75,6 @@ pub fn is_text_mappable(media_type: Option<&str>, path: impl AsRef<Path>) -> boo
 	false
 }
 
-pub fn is_html_item(media_type: Option<&str>, path: impl AsRef<Path>) -> bool {
-	let path_ref = path.as_ref();
-
-	if let Some(media_type) = media_type {
-		let mime = media_type.split(';').next().unwrap_or(media_type).trim().to_ascii_lowercase();
-		if is_html_media_type(&mime) {
-			return true;
-		}
-	}
-
-	path_ref.extension().and_then(|ext| ext.to_str()).is_some_and(is_html_extension)
-}
-
-pub fn html_to_markdown(html: &str) -> Result<String> {
-	let slimmed = slim(html, SlimOptions::from_indent(2)).map_err(Error::custom_from_err)?;
-	let markdown = to_md(&slimmed, None).map_err(Error::custom_from_err)?;
-
-	Ok(markdown)
-}
-
 pub fn derive_folders(paths: impl IntoIterator<Item = impl AsRef<str>>) -> Vec<String> {
 	let mut folders = BTreeSet::new();
 	folders.insert(String::new());
@@ -168,10 +147,6 @@ fn is_binary_media_type(mime: &str) -> bool {
 			| "application/vnd.rar"
 			| "application/wasm"
 	)
-}
-
-fn is_html_media_type(mime: &str) -> bool {
-	matches!(mime, "text/html" | "application/xhtml+xml")
 }
 
 fn is_known_text_extension(ext: &str) -> bool {
@@ -256,10 +231,6 @@ fn is_known_binary_extension(ext: &str) -> bool {
 			| "pyc" | "o"
 			| "obj" | "rlib"
 	)
-}
-
-fn is_html_extension(ext: &str) -> bool {
-	matches!(ext.to_ascii_lowercase().as_str(), "html" | "htm" | "xhtml")
 }
 
 fn is_known_text_filename(file_name: &str) -> bool {
@@ -478,44 +449,6 @@ mod tests {
 		Ok(())
 	}
 
-	#[test]
-	fn test_mapr_support_is_html_item() -> Result<()> {
-		// -- Exec & Check
-		assert!(is_html_item(Some("text/html"), "page"));
-		assert!(is_html_item(Some("text/html; charset=utf-8"), "page"));
-		assert!(is_html_item(Some("application/xhtml+xml"), "page"));
-		assert!(is_html_item(Some("application/octet-stream"), "docs/index.html"));
-
-		assert!(is_html_item(None, "docs/index.html"));
-		assert!(is_html_item(None, "docs/index.htm"));
-		assert!(is_html_item(None, "docs/index.xhtml"));
-		assert!(is_html_item(Some("text/plain"), "docs/index.HTML"));
-
-		assert!(!is_html_item(Some("text/markdown"), "page.md"));
-		assert!(!is_html_item(Some("application/json"), "data.json"));
-		assert!(!is_html_item(None, "src/main.rs"));
-		assert!(!is_html_item(None, "docs/index"));
-		assert!(!is_html_item(None, "docs/index.htmlx"));
-
-		Ok(())
-	}
-
-	#[test]
-	fn test_mapr_support_html_to_markdown() -> Result<()> {
-		// -- Setup & Fixtures
-		let html = r#"<!DOCTYPE html><html><head><title>Doc</title></head><body><h1>Hello</h1><p>Some <strong>bold</strong> text.</p><a href="https://example.com">link</a></body></html>"#;
-
-		// -- Exec
-		let markdown = html_to_markdown(html)?;
-
-		// -- Check
-		assert!(markdown.contains("Hello"));
-		assert!(markdown.contains("bold"));
-		assert!(markdown.contains("https://example.com"));
-		assert!(!markdown.contains("<h1>"));
-
-		Ok(())
-	}
 }
 
 // endregion: --- Tests

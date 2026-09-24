@@ -3,15 +3,15 @@ use super::fetchr_types::{
 	LocalFetchItem, LocalSourceKind,
 };
 use super::support::{
-	ensure_parent, hash_file, media_type_for, normalize_manifest_relative_path, normalize_relative_path,
-	path_to_string, paths_equivalent, source_identity, write_fetch_manifest,
+	apply_fetch_format, hash_bytes, hash_file, media_type_for, normalize_manifest_relative_path,
+	normalize_relative_path, path_to_string, paths_equivalent, source_identity, write_fetch_artifact,
+	write_fetch_manifest,
 };
 use crate::fetchr::{FetchCommonOptions, LocalFetchRequest};
 use crate::process::pipeline::{ArtifactItem, ArtifactSet, StageOutput, WorkflowContext};
 use crate::process::{LocalContentSource, ProcessFailure, ProcessItem, ProcessProgress, ProcessStage};
 use crate::{Error, Result};
 use simple_fs::{SPath, ensure_dir, list_files};
-use std::fs::copy;
 use std::path::Path;
 use std::sync::Arc;
 use tokio::sync::Semaphore;
@@ -85,30 +85,112 @@ pub(crate) async fn execute_local_fetch(request: &LocalFetchRequest, context: &W
 		source_path,
 		items,
 	} = discover_local(request)?;
-	let artifact_root = if request.options.copy_local_files {
-		ensure_dir(&context.fetch_cache)?;
-		context.fetch_cache.clone()
-	} else {
-		source_path.clone()
-	};
+	let artifact_root = context.fetch_cache.clone();
+	ensure_dir(&artifact_root)?;
 
 	let mut artifacts = Vec::with_capacity(items.len());
 	let mut completed_items = Vec::with_capacity(items.len());
 	let mut failures = Vec::new();
 	let mut manifest_items = Vec::with_capacity(items.len());
-
-	let semaphore = Arc::new(Semaphore::new(context.max_concurrency));
-	let mut materializations = Vec::with_capacity(items.len());
+	let mut prepared_items = Vec::with_capacity(items.len());
 
 	for item in &items {
-		let artifact_path = if request.options.copy_local_files {
-			context.fetch_cache.join(item.relative_path.as_str())
-		} else {
-			item.local_path.clone()
+		let contents = match std::fs::read(item.local_path.as_std_path()) {
+			Ok(contents) => contents,
+			Err(error) => {
+				let failure = ProcessFailure {
+					item: ProcessItem {
+						source: item.relative_path.clone(),
+						output_path: None,
+						stage: ProcessStage::Fetch,
+						usage: None,
+					},
+					message: error.to_string(),
+				};
+				manifest_items.push(manifest_item(
+					item,
+					&item.relative_path,
+					item.media_type.clone(),
+					None,
+					String::new(),
+				)?);
+				failures.push(failure.clone());
+				context.progress.publish(ProcessProgress::ItemFailed { failure });
+				continue;
+			}
 		};
-		let source_path = item.local_path.clone();
+
+		match apply_fetch_format(
+			&item.relative_path,
+			item.media_type.as_deref(),
+			&contents,
+			request.common.format,
+		) {
+			Ok(formatted) => prepared_items.push((item.clone(), formatted)),
+			Err(error) => {
+				let failure = ProcessFailure {
+					item: ProcessItem {
+						source: item.relative_path.clone(),
+						output_path: None,
+						stage: ProcessStage::Fetch,
+						usage: None,
+					},
+					message: error.to_string(),
+				};
+				manifest_items.push(manifest_item(
+					item,
+					&item.relative_path,
+					item.media_type.clone(),
+					None,
+					String::new(),
+				)?);
+				failures.push(failure.clone());
+				context.progress.publish(ProcessProgress::ItemFailed { failure });
+			}
+		}
+	}
+
+	let mut stored_path_counts = std::collections::BTreeMap::<String, usize>::new();
+	for (_, formatted) in &prepared_items {
+		*stored_path_counts.entry(formatted.relative_path.clone()).or_default() += 1;
+	}
+
+	let semaphore = Arc::new(Semaphore::new(context.max_concurrency));
+	let mut materializations = Vec::with_capacity(prepared_items.len());
+
+	for (item, formatted) in prepared_items {
+		let artifact_hash = hash_bytes(&formatted.bytes);
+		if stored_path_counts.get(&formatted.relative_path).copied().unwrap_or_default() > 1 {
+			let message = format!(
+				"multiple input artifacts resolve to fetch path {}",
+				formatted.relative_path
+			);
+			let failure = ProcessFailure {
+				item: ProcessItem {
+					source: formatted.relative_path.clone(),
+					output_path: None,
+					stage: ProcessStage::Fetch,
+					usage: None,
+				},
+				message,
+			};
+			manifest_items.push(manifest_item(
+				&item,
+				&formatted.relative_path,
+				formatted.media_type,
+				None,
+				artifact_hash,
+			)?);
+			failures.push(failure.clone());
+			context.progress.publish(ProcessProgress::ItemFailed { failure });
+			continue;
+		}
+
+		let relative_path = formatted.relative_path;
+		let media_type = formatted.media_type;
+		let artifact_path = artifact_root.join(relative_path.as_str());
 		let task_artifact_path = artifact_path.clone();
-		let copy_local_files = request.options.copy_local_files;
+		let task_bytes = formatted.bytes;
 		let permit = semaphore
 			.clone()
 			.acquire_owned()
@@ -116,57 +198,73 @@ pub(crate) async fn execute_local_fetch(request: &LocalFetchRequest, context: &W
 			.map_err(|_| Error::MalformedState("Fetch materialization concurrency control closed".to_owned()))?;
 		let task = tokio::task::spawn_blocking(move || {
 			let _permit = permit;
-			if copy_local_files {
-				copy_local_file(&source_path, &task_artifact_path).map_err(|error| error.to_string())
-			} else {
-				Ok(())
-			}
+			write_fetch_artifact(&task_artifact_path, &task_bytes).map_err(|error| error.to_string())
 		});
-		materializations.push((item.clone(), artifact_path, task));
+		materializations.push((item, relative_path, media_type, artifact_path, artifact_hash, task));
 	}
 
-	for (item, artifact_path, task) in materializations {
-		let process_item = ProcessItem {
-			source: item.relative_path.clone(),
-			output_path: Some(artifact_path.clone()),
-			stage: ProcessStage::Fetch,
-			usage: None,
-		};
+	for (item, relative_path, media_type, artifact_path, artifact_hash, task) in materializations {
 		let item_result = task
 			.await
 			.map_err(|error| Error::MalformedState(format!("Fetch materialization task failed: {error}")))?;
 
 		match item_result {
 			Ok(()) => {
+				let process_item = ProcessItem {
+					source: relative_path.clone(),
+					output_path: Some(artifact_path.clone()),
+					stage: ProcessStage::Fetch,
+					usage: None,
+				};
 				let artifact = ArtifactItem {
 					source: item.source.clone(),
-					relative_path: item.relative_path.clone(),
+					relative_path: relative_path.clone(),
 					local_path: artifact_path.clone(),
-					media_type: item.media_type.clone(),
-					source_hash: Some(item.content_hash.clone()),
+					media_type: media_type.clone(),
+					source_hash: Some(artifact_hash.clone()),
 				};
-				manifest_items.push(manifest_item(&item, Some(&artifact_path))?);
+				manifest_items.push(manifest_item(
+					&item,
+					&relative_path,
+					media_type,
+					Some(&artifact_path),
+					artifact_hash,
+				)?);
 				artifacts.push(artifact);
 				completed_items.push(process_item.clone());
 				context.progress.publish(ProcessProgress::ItemCompleted { item: process_item });
 			}
 			Err(error) => {
-				let failed_item = ProcessItem {
-					source: item.relative_path.clone(),
-					output_path: None,
-					stage: ProcessStage::Fetch,
-					usage: None,
-				};
 				let failure = ProcessFailure {
-					item: failed_item,
+					item: ProcessItem {
+						source: relative_path.clone(),
+						output_path: None,
+						stage: ProcessStage::Fetch,
+						usage: None,
+					},
 					message: error,
 				};
-				manifest_items.push(manifest_item(&item, None)?);
+				manifest_items.push(manifest_item(
+					&item,
+					&relative_path,
+					media_type,
+					None,
+					artifact_hash,
+				)?);
 				failures.push(failure.clone());
 				context.progress.publish(ProcessProgress::ItemFailed { failure });
 			}
 		}
 	}
+
+	artifacts.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
+	completed_items.sort_by(|left, right| left.source.cmp(&right.source));
+	failures.sort_by(|left, right| left.item.source.cmp(&right.item.source));
+	manifest_items.sort_by(|left, right| {
+		left.relative_path
+			.cmp(&right.relative_path)
+			.then_with(|| left.origin_relative_path.cmp(&right.origin_relative_path))
+	});
 
 	let manifest = FetchManifest {
 		version: FETCH_MANIFEST_VERSION,
@@ -194,22 +292,8 @@ pub(crate) fn load_prior_local_fetch(context: &WorkflowContext) -> Result<Artifa
 	let manifest = read_fetch_manifest(&context.manifest)?;
 	validate_prior_manifest(&manifest, context)?;
 
-	let copy_local_files = match &manifest.options {
-		FetchManifestOptions::Local { copy_local_files, .. } => *copy_local_files,
-		FetchManifestOptions::Web { .. } => {
-			return Err(Error::MalformedState(
-				"prior Fetch manifest is for web source, expected local source".to_owned(),
-			));
-		}
-	};
 	let artifact_root = SPath::from(manifest.artifact_root.clone());
-	let root_available = if copy_local_files {
-		artifact_root.is_dir()
-	} else {
-		artifact_root.exists()
-	};
-
-	if !root_available {
+	if !artifact_root.is_dir() {
 		return Err(Error::InvalidCache(format!(
 			"Fetch artifact root does not exist: {artifact_root}"
 		)));
@@ -222,6 +306,8 @@ pub(crate) fn load_prior_local_fetch(context: &WorkflowContext) -> Result<Artifa
 		if manifest_item.source.trim().is_empty()
 			|| manifest_item.local_path.trim().is_empty()
 			|| manifest_item.content_hash.trim().is_empty()
+			|| manifest_item.origin_relative_path.trim().is_empty()
+			|| manifest_item.artifact_hash.trim().is_empty()
 		{
 			return Err(Error::MalformedState(format!(
 				"Fetch manifest item is missing required metadata: {}",
@@ -258,11 +344,7 @@ pub(crate) fn load_prior_local_fetch(context: &WorkflowContext) -> Result<Artifa
 		}
 
 		let artifact_path = SPath::from(artifact_path_text.clone());
-		let expected_artifact_path = if copy_local_files {
-			artifact_root.join(relative_path.as_str())
-		} else {
-			SPath::from(manifest_item.local_path.clone())
-		};
+		let expected_artifact_path = artifact_root.join(relative_path.as_str());
 		let expected_path: &Path = expected_artifact_path.as_ref();
 		let actual_path: &Path = artifact_path.as_ref();
 
@@ -281,7 +363,7 @@ pub(crate) fn load_prior_local_fetch(context: &WorkflowContext) -> Result<Artifa
 		let artifact_hash = hash_file(&artifact_path)
 			.map_err(|error| Error::InvalidCache(format!("failed to read Fetch artifact {artifact_path}: {error}")))?;
 
-		if artifact_hash != manifest_item.content_hash {
+		if artifact_hash != manifest_item.artifact_hash {
 			return Err(Error::InvalidCache(format!(
 				"Fetch artifact hash does not match the manifest: {artifact_path}"
 			)));
@@ -292,7 +374,7 @@ pub(crate) fn load_prior_local_fetch(context: &WorkflowContext) -> Result<Artifa
 			relative_path,
 			local_path: artifact_path,
 			media_type: manifest_item.media_type,
-			source_hash: Some(manifest_item.content_hash),
+			source_hash: Some(manifest_item.artifact_hash),
 		});
 	}
 
@@ -331,7 +413,7 @@ fn try_resume_local_fetch(request: &LocalFetchRequest, context: &WorkflowContext
 		return Ok(None);
 	}
 
-	build_reused_stage_output(&manifest, &discovery, request, context)
+	build_reused_stage_output(&manifest, &discovery, context)
 }
 
 fn fetch_manifest_matches(
@@ -348,7 +430,7 @@ fn fetch_manifest_matches(
 	}
 
 	let expected_source_path = path_to_string(&discovery.source_path)?;
-	let expected_artifact_root_path = artifact_root_for(&discovery.source_path, request, context);
+	let expected_artifact_root_path = context.fetch_cache.clone();
 	let expected_artifact_root = path_to_string(&expected_artifact_root_path)?;
 
 	if manifest.source != discovery.source
@@ -359,22 +441,44 @@ fn fetch_manifest_matches(
 		return Ok(false);
 	}
 
-	for (manifest_item, current_item) in manifest.items.iter().zip(discovery.items.iter()) {
-		let expected_local_path = path_to_string(&current_item.local_path)?;
-		let expected_artifact_path = if request.options.copy_local_files {
-			expected_artifact_root_path.join(current_item.relative_path.as_str())
-		} else {
-			current_item.local_path.clone()
+	for current_item in &discovery.items {
+		let Ok(contents) = std::fs::read(current_item.local_path.as_std_path()) else {
+			return Ok(false);
 		};
+		let Ok(formatted) = apply_fetch_format(
+			&current_item.relative_path,
+			current_item.media_type.as_deref(),
+			&contents,
+			request.common.format,
+		) else {
+			return Ok(false);
+		};
+		let Some(manifest_item) = manifest
+			.items
+			.iter()
+			.find(|manifest_item| manifest_item.origin_relative_path == current_item.relative_path)
+		else {
+			return Ok(false);
+		};
+		let expected_local_path = path_to_string(&current_item.local_path)?;
+		let expected_artifact_path = expected_artifact_root_path.join(formatted.relative_path.as_str());
 		let expected_artifact_path = path_to_string(&expected_artifact_path)?;
 
 		if manifest_item.source != current_item.source
-			|| manifest_item.relative_path != current_item.relative_path
+			|| manifest_item.relative_path != formatted.relative_path
 			|| manifest_item.local_path != expected_local_path
 			|| manifest_item.artifact_path.as_deref() != Some(expected_artifact_path.as_str())
-			|| manifest_item.media_type != current_item.media_type
+			|| manifest_item.media_type != formatted.media_type
 			|| manifest_item.content_hash != current_item.content_hash
 		{
+			return Ok(false);
+		}
+
+		let artifact_path = SPath::from(expected_artifact_path);
+		let Ok(artifact_hash) = hash_file(&artifact_path) else {
+			return Ok(false);
+		};
+		if artifact_hash != manifest_item.artifact_hash {
 			return Ok(false);
 		}
 	}
@@ -385,14 +489,20 @@ fn fetch_manifest_matches(
 fn build_reused_stage_output(
 	manifest: &FetchManifest,
 	discovery: &LocalFetchDiscovery,
-	request: &LocalFetchRequest,
 	context: &WorkflowContext,
 ) -> Result<Option<StageOutput>> {
-	let artifact_root = artifact_root_for(&discovery.source_path, request, context);
+	let artifact_root = context.fetch_cache.clone();
 	let mut artifacts = Vec::with_capacity(discovery.items.len());
 	let mut skipped_items = Vec::with_capacity(discovery.items.len());
 
-	for (manifest_item, current_item) in manifest.items.iter().zip(discovery.items.iter()) {
+	for current_item in &discovery.items {
+		let Some(manifest_item) = manifest
+			.items
+			.iter()
+			.find(|manifest_item| manifest_item.origin_relative_path == current_item.relative_path)
+		else {
+			return Ok(None);
+		};
 		let Some(artifact_path) = manifest_item.artifact_path.as_ref() else {
 			return Ok(None);
 		};
@@ -407,19 +517,19 @@ fn build_reused_stage_output(
 			Err(_) => return Ok(None),
 		};
 
-		if artifact_hash != current_item.content_hash {
+		if artifact_hash != manifest_item.artifact_hash {
 			return Ok(None);
 		}
 
 		let artifact = ArtifactItem {
 			source: current_item.source.clone(),
-			relative_path: current_item.relative_path.clone(),
+			relative_path: manifest_item.relative_path.clone(),
 			local_path: artifact_path.clone(),
-			media_type: current_item.media_type.clone(),
-			source_hash: Some(current_item.content_hash.clone()),
+			media_type: manifest_item.media_type.clone(),
+			source_hash: Some(manifest_item.artifact_hash.clone()),
 		};
 		let process_item = ProcessItem {
-			source: current_item.relative_path.clone(),
+			source: manifest_item.relative_path.clone(),
 			output_path: Some(artifact_path),
 			stage: ProcessStage::Fetch,
 			usage: None,
@@ -431,6 +541,9 @@ fn build_reused_stage_output(
 		artifacts.push(artifact);
 		skipped_items.push(process_item);
 	}
+
+	artifacts.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
+	skipped_items.sort_by(|left, right| left.source.cmp(&right.source));
 
 	Ok(Some(StageOutput {
 		artifacts: ArtifactSet {
@@ -485,46 +598,32 @@ fn validate_prior_manifest(manifest: &FetchManifest, context: &WorkflowContext) 
 		));
 	}
 
-	if let FetchManifestOptions::Local { copy_local_files, .. } = &manifest.options
-		&& *copy_local_files
-	{
-		let expected_artifact_root = path_to_string(&context.fetch_cache)?;
-		if manifest.artifact_root != expected_artifact_root {
-			return Err(Error::MalformedState(
-				"Fetch artifact root is incompatible with the current cache; rerun Fetch to rebuild it".to_owned(),
-			));
-		}
+	let expected_artifact_root = path_to_string(&context.fetch_cache)?;
+	if manifest.artifact_root != expected_artifact_root {
+		return Err(Error::MalformedState(
+			"Fetch artifact root is incompatible with the current cache; rerun Fetch to rebuild it".to_owned(),
+		));
 	}
 
 	Ok(())
 }
 
-fn artifact_root_for(source_path: &SPath, request: &LocalFetchRequest, context: &WorkflowContext) -> SPath {
-	if request.options.copy_local_files {
-		context.fetch_cache.clone()
-	} else {
-		source_path.clone()
-	}
-}
-
-fn copy_local_file(source: &SPath, destination: &SPath) -> Result<()> {
-	ensure_parent(destination)?;
-	copy(source.as_std_path(), destination.as_std_path()).map_err(|error| {
-		Error::MalformedState(format!(
-			"failed to copy local artifact from {source} to {destination}: {error}"
-		))
-	})?;
-	Ok(())
-}
-
-fn manifest_item(item: &LocalFetchItem, artifact_path: Option<&SPath>) -> Result<FetchManifestItem> {
+fn manifest_item(
+	item: &LocalFetchItem,
+	relative_path: &str,
+	media_type: Option<String>,
+	artifact_path: Option<&SPath>,
+	artifact_hash: String,
+) -> Result<FetchManifestItem> {
 	Ok(FetchManifestItem {
 		source: item.source.clone(),
-		relative_path: item.relative_path.clone(),
+		relative_path: relative_path.to_owned(),
+		origin_relative_path: item.relative_path.clone(),
 		local_path: path_to_string(&item.local_path)?,
 		artifact_path: artifact_path.map(path_to_string).transpose()?,
-		media_type: item.media_type.clone(),
+		media_type,
 		content_hash: item.content_hash.clone(),
+		artifact_hash,
 	})
 }
 
@@ -793,7 +892,7 @@ mod tests {
 	#[test]
 	fn test_fetchr_local_matches_rejects_version_or_variant_mismatch() -> Result<()> {
 		// -- Setup & Fixtures
-		let request = LocalFetchRequest::new("src").with_copy_local_files(true);
+		let request = LocalFetchRequest::new("src");
 		let manifest_local = FetchManifest {
 			version: 1,
 			complete: true,
@@ -815,8 +914,7 @@ mod tests {
 			options: FetchManifestOptions::Web {
 				include: Vec::new(),
 				exclude: Vec::new(),
-				same_host_only: true,
-				follow_links: false,
+				format: crate::process::FetchFormat::default(),
 				max_depth: 0,
 				llms: None,
 			},

@@ -1,25 +1,18 @@
 use crate::mapr::{
-	ContentMapDocument, FileMapEntry, FileMapMetadata, JournalHeader, JournalRecord, PROMPT_VERSION, html_to_markdown,
-	init_or_load_journal, is_html_item, is_text_mappable, parse_file_info, publish_content_map, remove_journal,
-	render_file_prompt, select_active_ai_client,
+	ContentMapDocument, FileMapEntry, FileMapMetadata, JournalHeader, JournalRecord, PROMPT_VERSION,
+	init_or_load_journal, is_text_mappable, parse_file_info, publish_content_map, remove_journal, render_file_prompt,
+	select_active_ai_client, MapConfig,
 };
 use crate::process::pipeline::{ArtifactItem, ArtifactSet, StageOutput, WorkflowContext};
-use crate::process::{ContentMapOptions, ProcessFailure, ProcessItem, ProcessProgress, ProcessStage};
+use crate::process::{ProcessFailure, ProcessItem, ProcessProgress, ProcessStage};
 use crate::support::hash_bytes;
 use crate::Result;
 use std::collections::BTreeMap;
-use std::path::{Component, Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 // region:    --- Types
-
-struct PreparedArtifact {
-	item: ArtifactItem,
-	relative_path: String,
-	content: Vec<u8>,
-	metadata: FileMapMetadata,
-}
 
 // endregion: --- Types
 
@@ -28,37 +21,55 @@ struct PreparedArtifact {
 pub(crate) async fn execute_content_map(
 	context: &WorkflowContext,
 	input: ArtifactSet,
-	options: &ContentMapOptions,
+	options: &MapConfig,
 ) -> Result<StageOutput> {
 	context.progress.publish(ProcessProgress::StageStarted {
-		stage: ProcessStage::AiContentMap,
+			stage: ProcessStage::Map,
 	});
 
-	let journal_path = options
-		.journal_path
-		.as_ref()
-		.map(|path| path.as_std_path())
-		.unwrap_or_else(|| context.journal.as_std_path());
-
 	let prompt_version = PROMPT_VERSION;
-	let header = JournalHeader::new(&options.model, prompt_version, context.mapper_output.as_str());
-	let (reuse_index, appender) = init_or_load_journal(journal_path, &header)?;
+	let header = JournalHeader::new(&options.model, prompt_version, input.root.as_str());
+	let (reuse_index, appender) = init_or_load_journal(context.journal.as_std_path(), &header)?;
 
-	let previous_metadata = load_previous_file_metadata(context.content_map.as_std_path());
-	let (prepared_items, mut failures) =
-		prepare_mapper_artifacts(context, &input, options.to_md.unwrap_or(true), &previous_metadata);
+	let mut failures = Vec::new();
 	let mut completed_items = Vec::new();
 	let mut skipped_items = Vec::new();
 	let mut file_map = BTreeMap::new();
 	let mut pending_items = Vec::new();
+	let mut file_metadata = BTreeMap::new();
 
-	for prepared in &prepared_items {
-		let item = &prepared.item;
-		if !is_text_mappable(item.media_type.as_deref(), Path::new(&prepared.relative_path)) {
+	for item in &input.items {
+		let contents = match std::fs::read(item.local_path.as_std_path()) {
+			Ok(contents) => contents,
+			Err(error) => {
+				record_preparation_failure(
+					context,
+					item,
+					format!("failed to read file {}: {error}", item.local_path),
+					&mut failures,
+				);
+				continue;
+			}
+		};
+		let source_hash = hash_bytes(&contents);
+		let source_metadata = std::fs::metadata(item.local_path.as_std_path()).ok();
+		let last_modified_unix_nanos = source_metadata
+			.and_then(|metadata| metadata.modified().ok())
+			.and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
+			.and_then(|duration| u64::try_from(duration.as_nanos()).ok());
+		file_metadata.insert(
+			item.relative_path.clone(),
+			FileMapMetadata {
+				last_modified_unix_nanos,
+				source_hash: source_hash.clone(),
+			},
+		);
+
+		if !is_text_mappable(item.media_type.as_deref(), Path::new(&item.relative_path)) {
 			let process_item = ProcessItem {
 				source: item.relative_path.clone(),
 				output_path: None,
-				stage: ProcessStage::AiContentMap,
+				stage: ProcessStage::Map,
 				usage: None,
 			};
 			context.progress.publish(ProcessProgress::ItemSkipped {
@@ -69,12 +80,12 @@ pub(crate) async fn execute_content_map(
 		}
 
 		if let Some(max_size) = options.max_size
-			&& prepared.content.len() > max_size
+			&& contents.len() > max_size
 		{
 			let process_item = ProcessItem {
 				source: item.relative_path.clone(),
 				output_path: None,
-				stage: ProcessStage::AiContentMap,
+				stage: ProcessStage::Map,
 				usage: None,
 			};
 			context.progress.publish(ProcessProgress::ItemSkipped {
@@ -84,13 +95,13 @@ pub(crate) async fn execute_content_map(
 			continue;
 		}
 
-		let content_str = match std::str::from_utf8(&prepared.content) {
+		let content_str = match std::str::from_utf8(&contents) {
 			Ok(str_val) => str_val,
 			Err(_) => {
 				let process_item = ProcessItem {
 					source: item.relative_path.clone(),
 					output_path: None,
-					stage: ProcessStage::AiContentMap,
+					stage: ProcessStage::Map,
 					usage: None,
 				};
 				context.progress.publish(ProcessProgress::ItemSkipped {
@@ -102,12 +113,12 @@ pub(crate) async fn execute_content_map(
 		};
 
 		if options.reuse_unchanged_records
-			&& let Some(cached_entry) = reuse_index.get_file(&prepared.relative_path, &prepared.metadata.prepared_hash)
+			&& let Some(cached_entry) = reuse_index.get_file(&item.relative_path, &source_hash)
 		{
 			let process_item = ProcessItem {
 				source: item.relative_path.clone(),
 				output_path: Some(context.content_map.clone()),
-				stage: ProcessStage::AiContentMap,
+				stage: ProcessStage::Map,
 				usage: None,
 			};
 			context.progress.publish(ProcessProgress::ItemSkipped {
@@ -118,18 +129,9 @@ pub(crate) async fn execute_content_map(
 			continue;
 		}
 
-		pending_items.push((
-			item.clone(),
-			prepared.relative_path.clone(),
-			prepared.metadata.prepared_hash.clone(),
-			content_str.to_string(),
-		));
+		pending_items.push((item.clone(), item.relative_path.clone(), source_hash, content_str.to_string()));
 	}
 
-	let file_metadata = prepared_items
-		.iter()
-		.map(|prepared| (prepared.item.relative_path.clone(), prepared.metadata.clone()))
-		.collect::<BTreeMap<_, _>>();
 	let partial_document = ContentMapDocument::new(
 		&options.model,
 		prompt_version,
@@ -144,7 +146,7 @@ pub(crate) async fn execute_content_map(
 	let ai_client = select_active_ai_client(&options.model);
 	let mut join_set = tokio::task::JoinSet::new();
 
-	for (item, prepared_path, prepared_hash, content) in pending_items {
+	for (item, relative_path, source_hash, content) in pending_items {
 		let sem = semaphore.clone();
 		let client = ai_client.clone();
 		let appender = appender.clone();
@@ -164,7 +166,7 @@ pub(crate) async fn execute_content_map(
 						item: ProcessItem {
 							source: item.relative_path.clone(),
 							output_path: None,
-							stage: ProcessStage::AiContentMap,
+						stage: ProcessStage::Map,
 							usage: None,
 						},
 						message: err.to_string(),
@@ -186,11 +188,11 @@ pub(crate) async fn execute_content_map(
 
 			match result {
 				Ok((entry, usage)) => {
-					let _ = appender.append(&JournalRecord::file_ok(&prepared_path, &prepared_hash, entry.clone()));
+					let _ = appender.append(&JournalRecord::file_ok(&relative_path, &source_hash, entry.clone()));
 					let process_item = ProcessItem {
 						source: item.relative_path.clone(),
 						output_path: Some(content_map_path),
-						stage: ProcessStage::AiContentMap,
+						stage: ProcessStage::Map,
 						usage,
 					};
 					progress.publish(ProcessProgress::ItemCompleted {
@@ -199,12 +201,12 @@ pub(crate) async fn execute_content_map(
 					Some(Ok((item.relative_path, process_item, entry)))
 				}
 				Err(err_msg) => {
-					let _ = appender.append(&JournalRecord::file_failed(&prepared_path, &prepared_hash, &err_msg));
+					let _ = appender.append(&JournalRecord::file_failed(&relative_path, &source_hash, &err_msg));
 					let failure = ProcessFailure {
 						item: ProcessItem {
 							source: item.relative_path.clone(),
 							output_path: None,
-							stage: ProcessStage::AiContentMap,
+							stage: ProcessStage::Map,
 							usage: None,
 						},
 						message: err_msg,
@@ -247,13 +249,13 @@ pub(crate) async fn execute_content_map(
 	publish_content_map(context.content_map.as_std_path(), &document)?;
 
 	if !options.retain_journal {
-		remove_journal(journal_path)?;
+		remove_journal(context.journal.as_std_path())?;
 	} else if !context.resume && failures.is_empty() {
 		appender.empty()?;
 	}
 
 	context.progress.publish(ProcessProgress::StageCompleted {
-		stage: ProcessStage::AiContentMap,
+		stage: ProcessStage::Map,
 	});
 
 	Ok(StageOutput {
@@ -268,205 +270,6 @@ pub(crate) async fn execute_content_map(
 
 // region:    --- Support
 
-fn prepare_mapper_artifacts(
-	context: &WorkflowContext,
-	input: &ArtifactSet,
-	to_md: bool,
-	previous_metadata: &BTreeMap<String, FileMapMetadata>,
-) -> (Vec<PreparedArtifact>, Vec<ProcessFailure>) {
-	let target_paths = input
-		.items
-		.iter()
-		.map(|item| mapper_relative_path(item, to_md))
-		.collect::<Vec<_>>();
-	let mut target_counts = BTreeMap::<String, usize>::new();
-	for target_path in &target_paths {
-		if let Ok(target_path) = target_path {
-			*target_counts.entry(target_path.clone()).or_default() += 1;
-		}
-	}
-
-	let mut prepared_items = Vec::new();
-	let mut failures = Vec::new();
-	for (item, target_path) in input.items.iter().zip(target_paths) {
-		let relative_path = match target_path {
-			Ok(relative_path) => relative_path,
-			Err(message) => {
-				record_preparation_failure(context, item, message, &mut failures);
-				continue;
-			}
-		};
-		if target_counts.get(&relative_path).copied().unwrap_or_default() > 1 {
-			record_preparation_failure(
-				context,
-				item,
-				format!("multiple input artifacts resolve to mapper path {relative_path}"),
-				&mut failures,
-			);
-			continue;
-		}
-
-		match prepare_mapper_artifact(
-			context,
-			item,
-			&relative_path,
-			to_md,
-			previous_metadata.get(&item.relative_path),
-		) {
-			Ok(prepared) => prepared_items.push(prepared),
-			Err(message) => record_preparation_failure(context, item, message, &mut failures),
-		}
-	}
-
-	(prepared_items, failures)
-}
-
-fn prepare_mapper_artifact(
-	context: &WorkflowContext,
-	item: &ArtifactItem,
-	prepared_relative_path: &str,
-	to_md: bool,
-	previous_metadata: Option<&FileMapMetadata>,
-) -> std::result::Result<PreparedArtifact, String> {
-	let source_path = item.local_path.as_std_path();
-	let source_metadata = std::fs::metadata(source_path)
-		.map_err(|error| format!("cannot access file {}: {error}", item.local_path))?;
-	let source_modified = source_metadata
-		.modified()
-		.ok()
-		.and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
-		.and_then(|duration| u64::try_from(duration.as_nanos()).ok());
-	let target_path = context.mapper_output.as_std_path().join(prepared_relative_path);
-
-	if let Some(previous) = previous_metadata
-		&& previous.prepared_path == prepared_relative_path
-		&& source_modified.is_some()
-		&& previous.last_modified_unix_nanos == source_modified
-		&& let Ok(contents) = std::fs::read(&target_path)
-	{
-		let prepared_hash = hash_bytes(&contents);
-		if prepared_hash == previous.prepared_hash && !previous.source_hash.is_empty() {
-			return Ok(PreparedArtifact {
-				item: item.clone(),
-				relative_path: prepared_relative_path.to_owned(),
-				content: contents,
-				metadata: FileMapMetadata {
-					last_modified_unix_nanos: source_modified,
-					source_hash: previous.source_hash.clone(),
-					prepared_path: prepared_relative_path.to_owned(),
-					prepared_hash,
-				},
-			});
-		}
-	}
-
-	let source_contents = std::fs::read(source_path)
-		.map_err(|error| format!("failed to read file {}: {error}", item.local_path))?;
-	let source_hash = hash_bytes(&source_contents);
-
-	if let Some(previous) = previous_metadata
-		&& previous.prepared_path == prepared_relative_path
-		&& previous.source_hash == source_hash
-		&& let Ok(contents) = std::fs::read(&target_path)
-	{
-		let prepared_hash = hash_bytes(&contents);
-		if prepared_hash == previous.prepared_hash {
-			return Ok(PreparedArtifact {
-				item: item.clone(),
-				relative_path: prepared_relative_path.to_owned(),
-				content: contents,
-				metadata: FileMapMetadata {
-					last_modified_unix_nanos: source_modified,
-					source_hash,
-					prepared_path: prepared_relative_path.to_owned(),
-					prepared_hash,
-				},
-			});
-		}
-	}
-
-	let prepared_contents = if to_md && is_html_item(item.media_type.as_deref(), source_path) {
-		let html = std::str::from_utf8(&source_contents)
-			.map_err(|error| format!("HTML input {} is not valid UTF-8: {error}", item.local_path))?;
-		html_to_markdown(html)
-			.map_err(|error| format!("failed to convert HTML to Markdown for {}: {error}", item.local_path))?
-			.into_bytes()
-	} else {
-		source_contents
-	};
-	write_mapper_copy(&target_path, &prepared_contents)?;
-	let prepared_hash = hash_bytes(&prepared_contents);
-
-	Ok(PreparedArtifact {
-		item: item.clone(),
-		relative_path: prepared_relative_path.to_owned(),
-		content: prepared_contents,
-		metadata: FileMapMetadata {
-			last_modified_unix_nanos: source_modified,
-			source_hash,
-			prepared_path: prepared_relative_path.to_owned(),
-			prepared_hash,
-		},
-	})
-}
-
-fn mapper_relative_path(item: &ArtifactItem, to_md: bool) -> std::result::Result<String, String> {
-	let normalized_path = item.relative_path.replace('\\', "/");
-	let normalized_path = normalized_path.strip_prefix("./").unwrap_or(&normalized_path);
-	let path = Path::new(normalized_path);
-	if path.is_absolute()
-		|| path.components().any(|component| {
-			matches!(
-				component,
-				Component::ParentDir | Component::RootDir | Component::Prefix(_)
-			)
-		})
-	{
-		return Err(format!("invalid mapper input path: {}", item.relative_path));
-	}
-
-	let mut prepared_path = PathBuf::from(normalized_path);
-	if to_md && is_html_item(item.media_type.as_deref(), path) {
-		prepared_path.set_extension("md");
-	}
-	let prepared_path = prepared_path
-		.to_str()
-		.ok_or_else(|| format!("mapper input path is not valid UTF-8: {}", item.relative_path))?
-		.replace('\\', "/");
-	if prepared_path.is_empty() || prepared_path == "." {
-		return Err(format!("invalid mapper input path: {}", item.relative_path));
-	}
-
-	Ok(prepared_path)
-}
-
-fn write_mapper_copy(path: &Path, contents: &[u8]) -> std::result::Result<(), String> {
-	let parent = path
-		.parent()
-		.ok_or_else(|| format!("mapper output path has no parent: {}", path.display()))?;
-	std::fs::create_dir_all(parent)
-		.map_err(|error| format!("failed to create mapper directory {}: {error}", parent.display()))?;
-	let file_name = path
-		.file_name()
-		.ok_or_else(|| format!("mapper output path has no file name: {}", path.display()))?;
-	let temporary_path = parent.join(format!("{}.tmp", file_name.to_string_lossy()));
-	std::fs::write(&temporary_path, contents)
-		.map_err(|error| format!("failed to write mapper copy {}: {error}", temporary_path.display()))?;
-	std::fs::rename(&temporary_path, path)
-		.map_err(|error| format!("failed to replace mapper copy {}: {error}", path.display()))?;
-	Ok(())
-}
-
-fn load_previous_file_metadata(path: &Path) -> BTreeMap<String, FileMapMetadata> {
-	let Ok(contents) = std::fs::read(path) else {
-		return BTreeMap::new();
-	};
-	let Ok(document) = serde_json::from_slice::<ContentMapDocument>(&contents) else {
-		return BTreeMap::new();
-	};
-	document.file_metadata
-}
-
 fn record_preparation_failure(
 	context: &WorkflowContext,
 	item: &ArtifactItem,
@@ -477,7 +280,7 @@ fn record_preparation_failure(
 		item: ProcessItem {
 			source: item.relative_path.clone(),
 			output_path: None,
-			stage: ProcessStage::AiContentMap,
+			stage: ProcessStage::Map,
 			usage: None,
 		},
 		message,

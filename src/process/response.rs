@@ -76,8 +76,7 @@ pub struct ProcessFailure {
 pub enum ProcessStage {
 	Fetch,
 	Sanitize,
-	AiAugment,
-	AiContentMap,
+	Map,
 }
 
 // endregion: --- Types
@@ -192,9 +191,9 @@ mod tests {
 		};
 
 		let items = vec![
-			ProcessItem::new("a.md", None, ProcessStage::AiContentMap).with_usage(u1),
+			ProcessItem::new("a.md", None, ProcessStage::Map).with_usage(u1),
 			ProcessItem::new("b.md", None, ProcessStage::Fetch),
-			ProcessItem::new("c.md", None, ProcessStage::AiContentMap).with_usage(u2),
+			ProcessItem::new("c.md", None, ProcessStage::Map).with_usage(u2),
 		];
 
 		let total = compute_total_usage(&items).ok_or("expected total usage")?;

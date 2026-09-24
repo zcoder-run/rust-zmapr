@@ -125,6 +125,8 @@ impl MaprAiClient for StubAiClient {
 	fn complete<'a>(&'a self, prompt: &'a str) -> BoxFuture<'a, crate::Result<MaprAiResponse>> {
 		let response = if let Some(custom) = &self.custom_response {
 			custom.clone()
+		} else if let Some(content) = sanitize_input_from_prompt(prompt) {
+			format!("<SANITIZED_CONTENT>{content}</SANITIZED_CONTENT>")
 		} else {
 			let hash = blake3::hash(prompt.as_bytes()).to_hex();
 			let short_hash = &hash[..8];
@@ -180,6 +182,15 @@ impl MaprAiClient for GenaiAiClient {
 // endregion: --- Trait Implementations
 
 // region:    --- Support
+
+fn sanitize_input_from_prompt(prompt: &str) -> Option<&str> {
+	let start_tag = "<SANITIZE_INPUT>";
+	let end_tag = "</SANITIZE_INPUT>";
+	let content_start = prompt.find(start_tag)? + start_tag.len();
+	let remaining = prompt.get(content_start..)?;
+	let content_end = remaining.find(end_tag)?;
+	prompt.get(content_start..content_start + content_end)
+}
 
 static ACTIVE_SELECTOR: RwLock<Option<MaprAiSelector>> = RwLock::new(None);
 

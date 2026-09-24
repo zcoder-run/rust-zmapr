@@ -2,11 +2,13 @@ use super::progress::{ProcessProgress, ProcessProgressPublisher};
 use super::response::compute_total_usage;
 use super::source::ContentSource;
 use super::{ProcessContentOptions, ProcessFailure, ProcessItem, ProcessStage};
-use crate::fetchr::{FetchRequest, execute_http_fetch, execute_local_fetch, load_prior_local_fetch};
-use crate::{Error, Result};
+use crate::fetchr::{
+	FetchRequest, LocalFetchRequest, WebFetchRequest, execute_http_fetch, execute_local_fetch, load_prior_local_fetch,
+};
+use crate::mapr::MapConfig;
+use crate::sanitizr::{SanitizeConfig, execute_sanitize};
+use crate::Result;
 use simple_fs::SPath;
-use std::future::Future;
-use std::pin::Pin;
 
 // region:    --- Types
 
@@ -16,8 +18,7 @@ pub(crate) struct WorkflowContext {
 	pub(crate) destination: SPath,
 	pub(crate) fetch_cache: SPath,
 	pub(crate) sanitize_output: SPath,
-	pub(crate) ai_augment_output: SPath,
-	pub(crate) mapper_output: SPath,
+	pub(crate) sanitize_manifest: SPath,
 	pub(crate) manifest: SPath,
 	pub(crate) journal: SPath,
 	pub(crate) content_map: SPath,
@@ -77,34 +78,41 @@ impl StageOutput {
 
 // region:    --- Processing Stage
 
-type StageFuture<'a> = Pin<Box<dyn Future<Output = Result<StageOutput>> + Send + 'a>>;
-
-trait ProcessingStage {
-	fn execute<'a>(&'a self, context: &'a WorkflowContext, input: ArtifactSet) -> StageFuture<'a>;
-}
-
-struct DeferredStage {
-	stage: ProcessStage,
-	message: &'static str,
-}
-
-impl ProcessingStage for DeferredStage {
-	fn execute<'a>(&'a self, _context: &'a WorkflowContext, _input: ArtifactSet) -> StageFuture<'a> {
-		Box::pin(async move {
-			Err(Error::Unsupported(format!(
-				"{:?} execution is not implemented yet: {}",
-				self.stage, self.message
-			)))
-		})
-	}
-}
 
 // endregion: --- Processing Stage
 
 // region:    --- Pipeline
 
-pub(crate) async fn run_pipeline(context: &WorkflowContext, options: &ProcessContentOptions) -> Result<StageOutput> {
-	let mut output = if let Some(fetch_request) = options.fetch.as_ref() {
+pub(crate) fn build_fetch_request(options: &ProcessContentOptions) -> Option<FetchRequest> {
+	let source = options.source.as_deref()?;
+
+	if source.starts_with("http://") || source.starts_with("https://") {
+		Some(FetchRequest::Web(
+			WebFetchRequest::new(source)
+				.with_same_host_only(true)
+				.with_follow_links(options.max_depth > 0)
+				.with_max_depth(options.max_depth)
+				.with_format(options.format)
+				.with_llms(options.llms)
+				.with_include(options.include.clone())
+				.with_exclude(options.exclude.clone()),
+		))
+	} else {
+		Some(FetchRequest::Local(
+			LocalFetchRequest::new(source)
+				.with_format(options.format)
+				.with_include(options.include.clone())
+				.with_exclude(options.exclude.clone()),
+		))
+	}
+}
+
+pub(crate) async fn run_pipeline(
+	context: &WorkflowContext,
+	options: &ProcessContentOptions,
+	fetch_request: Option<&FetchRequest>,
+) -> Result<StageOutput> {
+	let mut output = if let Some(fetch_request) = fetch_request {
 		execute_fetch_stage(context, fetch_request).await?
 	} else if requires_prior_fetch(options) {
 		StageOutput::passthrough(load_prior_local_fetch(context)?)
@@ -112,28 +120,27 @@ pub(crate) async fn run_pipeline(context: &WorkflowContext, options: &ProcessCon
 		StageOutput::passthrough(ArtifactSet::empty(context.fetch_cache.clone()))
 	};
 
-	if options.sanitize.is_some() {
-		output = execute_deferred_stage(
-			context,
-			output.artifacts,
-			ProcessStage::Sanitize,
-			"mechanical content preparation is deferred",
-		)
-		.await?;
+	if options.sanitize {
+		let sanitize_config = SanitizeConfig {
+			model: options.resolved_sanitize_model().unwrap_or_default().to_owned(),
+			prompt: options.sanitize_prompt.clone(),
+			max_size: 200_000,
+		};
+		let sanitize_output = execute_sanitize(context, output.artifacts, &sanitize_config).await?;
+		output.completed_items.extend(sanitize_output.completed_items);
+		output.skipped_items.extend(sanitize_output.skipped_items);
+		output.failures.extend(sanitize_output.failures);
+		output.artifacts = sanitize_output.artifacts;
 	}
 
-	if options.ai_augment.is_some() {
-		output = execute_deferred_stage(
-			context,
-			output.artifacts,
-			ProcessStage::AiAugment,
-			"AI augmentation is deferred",
-		)
-		.await?;
-	}
-
-	if let Some(content_map_options) = options.content_map.as_ref() {
-		let map_output = crate::mapr::execute_content_map(context, output.artifacts, content_map_options).await?;
+	if options.map {
+		let map_config = MapConfig {
+			model: options.resolved_map_model().unwrap_or_default().to_owned(),
+			max_size: Some(200_000),
+			reuse_unchanged_records: options.resume,
+			retain_journal: true,
+		};
+		let map_output = crate::mapr::execute_content_map(context, output.artifacts, &map_config).await?;
 		output.completed_items.extend(map_output.completed_items);
 		output.skipped_items.extend(map_output.skipped_items);
 		output.failures.extend(map_output.failures);
@@ -162,24 +169,7 @@ async fn execute_fetch_stage(context: &WorkflowContext, request: &FetchRequest) 
 }
 
 fn requires_prior_fetch(options: &ProcessContentOptions) -> bool {
-	options.sanitize.is_some() || options.ai_augment.is_some() || options.content_map.is_some()
-}
-
-async fn execute_deferred_stage(
-	context: &WorkflowContext,
-	input: ArtifactSet,
-	stage: ProcessStage,
-	message: &'static str,
-) -> Result<StageOutput> {
-	context.progress.publish(ProcessProgress::StageStarted { stage });
-	let deferred_stage = DeferredStage { stage, message };
-	let result = deferred_stage.execute(context, input).await;
-
-	if result.is_ok() {
-		context.progress.publish(ProcessProgress::StageCompleted { stage });
-	}
-
-	result
+	options.sanitize || options.map
 }
 
 // endregion: --- Pipeline

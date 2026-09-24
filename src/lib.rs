@@ -12,6 +12,7 @@ mod error;
 mod fetchr;
 mod mapr;
 mod process;
+mod sanitizr;
 mod support;
 
 pub use error::{Error, Result};

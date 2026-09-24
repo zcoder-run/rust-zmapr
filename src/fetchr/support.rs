@@ -1,9 +1,11 @@
 use super::fetchr_types::FetchManifest;
 use crate::fetchr::FetchCommonOptions;
+use crate::process::FetchFormat;
+use crate::support::{html_to_markdown, is_html_item, slim_html};
 use crate::{Error, Result};
 use simple_fs::{SPath, ensure_dir};
 use std::fs::{rename, write};
-use std::path::{Component, Path};
+use std::path::{Component, Path, PathBuf};
 
 // region:    --- Support
 
@@ -14,6 +16,17 @@ pub(crate) fn ensure_parent(path: &SPath) -> Result<()> {
 		.ok_or_else(|| Error::MalformedState(format!("workflow path has no parent: {path}")))?;
 	let parent = SPath::from(parent.to_string_lossy().into_owned());
 	ensure_dir(&parent)?;
+	Ok(())
+}
+
+pub(crate) fn write_fetch_artifact(path: &SPath, contents: &[u8]) -> Result<()> {
+	ensure_parent(path)?;
+	let temporary_path = SPath::from(format!("{path}.tmp"));
+	write(temporary_path.as_std_path(), contents).map_err(|error| {
+		Error::MalformedState(format!("failed to write Fetch artifact {temporary_path}: {error}"))
+	})?;
+	rename(temporary_path.as_std_path(), path.as_std_path())
+		.map_err(|error| Error::MalformedState(format!("failed to replace Fetch artifact {path}: {error}")))?;
 	Ok(())
 }
 
@@ -37,6 +50,57 @@ pub(crate) fn hash_file(path: &SPath) -> Result<String> {
 
 pub(crate) fn hash_bytes(contents: &[u8]) -> String {
 	crate::support::hash_bytes(contents)
+}
+
+pub(crate) struct FormattedArtifact {
+	pub(crate) relative_path: String,
+	pub(crate) media_type: Option<String>,
+	pub(crate) bytes: Vec<u8>,
+}
+
+pub(crate) fn apply_fetch_format(
+	relative_path: &str,
+	media_type: Option<&str>,
+	bytes: &[u8],
+	format: FetchFormat,
+) -> Result<FormattedArtifact> {
+	if format == FetchFormat::Raw || !is_html_item(media_type, relative_path) {
+		return Ok(FormattedArtifact {
+			relative_path: relative_path.to_owned(),
+			media_type: media_type.map(str::to_owned),
+			bytes: bytes.to_vec(),
+		});
+	}
+
+	let html = std::str::from_utf8(bytes)
+		.map_err(|error| Error::custom(format!("HTML input is not valid UTF-8: {error}")))?;
+
+	match format {
+		FetchFormat::Raw => Ok(FormattedArtifact {
+			relative_path: relative_path.to_owned(),
+			media_type: media_type.map(str::to_owned),
+			bytes: bytes.to_vec(),
+		}),
+		FetchFormat::Slim => Ok(FormattedArtifact {
+			relative_path: relative_path.to_owned(),
+			media_type: media_type.map(str::to_owned),
+			bytes: slim_html(html)?.into_bytes(),
+		}),
+		FetchFormat::Markdown => {
+			let mut path = PathBuf::from(relative_path);
+			path.set_extension("md");
+			let relative_path = path
+				.to_str()
+				.ok_or_else(|| Error::InvalidConfiguration("fetch path is not valid UTF-8".to_owned()))?
+				.replace('\\', "/");
+
+			Ok(FormattedArtifact {
+				relative_path,
+				media_type: Some("text/markdown".to_owned()),
+				bytes: html_to_markdown(html)?.into_bytes(),
+			})
+		}
+	}
 }
 
 pub(crate) fn media_type_for(path: &Path) -> Option<String> {
@@ -209,6 +273,7 @@ mod tests {
 	type Result<T> = core::result::Result<T, Box<dyn std::error::Error>>;
 
 	use super::*;
+	use crate::process::FetchFormat;
 
 	#[test]
 	fn test_fetchr_support_path_matches_glob_rules() -> Result<()> {
@@ -232,6 +297,7 @@ mod tests {
 		let filter_options = FetchCommonOptions {
 			include: vec!["docs/**".to_owned()],
 			exclude: vec!["docs/secret.html".to_owned()],
+			format: FetchFormat::default(),
 		};
 
 		// -- Exec & Check
@@ -239,6 +305,37 @@ mod tests {
 		assert!(is_path_selected("docs/guide.html", &filter_options));
 		assert!(!is_path_selected("docs/secret.html", &filter_options));
 		assert!(!is_path_selected("blog/post.html", &filter_options));
+
+		Ok(())
+	}
+
+	#[test]
+	fn test_fetchr_support_apply_fetch_format_variants() -> Result<()> {
+		// -- Setup & Fixtures
+		let html = b"<html><body><h1>Hello</h1><script>remove me</script></body></html>";
+
+		// -- Exec
+		let raw = apply_fetch_format("page.html", Some("text/html"), html, FetchFormat::Raw)?;
+		let slimmed = apply_fetch_format("page.html", Some("text/html"), html, FetchFormat::Slim)?;
+		let markdown = apply_fetch_format("page.html", Some("text/html"), html, FetchFormat::Markdown)?;
+		let plain = apply_fetch_format("page.txt", Some("text/plain"), b"unchanged", FetchFormat::Markdown)?;
+
+		// -- Check
+		assert_eq!(raw.relative_path, "page.html");
+		assert_eq!(raw.media_type.as_deref(), Some("text/html"));
+		assert_eq!(raw.bytes, html);
+
+		assert_eq!(slimmed.relative_path, "page.html");
+		assert_eq!(slimmed.media_type.as_deref(), Some("text/html"));
+		assert!(String::from_utf8(slimmed.bytes)?.contains("Hello"));
+
+		assert_eq!(markdown.relative_path, "page.md");
+		assert_eq!(markdown.media_type.as_deref(), Some("text/markdown"));
+		assert!(String::from_utf8(markdown.bytes)?.contains("Hello"));
+
+		assert_eq!(plain.relative_path, "page.txt");
+		assert_eq!(plain.media_type.as_deref(), Some("text/plain"));
+		assert_eq!(plain.bytes, b"unchanged");
 
 		Ok(())
 	}
