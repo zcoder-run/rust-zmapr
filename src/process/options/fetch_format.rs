@@ -9,7 +9,7 @@ pub enum FetchFormat {
 	Slim,
 
 	#[default]
-	Markdown,
+	Md,
 }
 
 // endregion: --- Types

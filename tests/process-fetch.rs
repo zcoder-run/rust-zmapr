@@ -1,10 +1,8 @@
+use serde_json::json;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
-use serde_json::json;
-use zmapr::{
-	Error, FetchFormat, ProcessContentOptions, ProcessProgress, ProcessStage, process_content,
-};
+use zmapr::{Error, FetchFormat, ProcessContentOptions, ProcessProgress, ProcessStage, process_content};
 
 type Result<T> = core::result::Result<T, Box<dyn std::error::Error>>; // For tests.
 
@@ -34,10 +32,7 @@ async fn test_process_fetch_local_file_returns_output_and_progress() -> Result<(
 	assert_eq!(item.stage, ProcessStage::Fetch);
 
 	let expected_fetch_root = destination.join(".tmp-zmapr").join("01-fetch");
-	let output_path = item
-		.output_path
-		.as_ref()
-		.ok_or("Fetch should publish an output path")?;
+	let output_path = item.output_path.as_ref().ok_or("Fetch should publish an output path")?;
 	let output_path: &Path = output_path.as_ref();
 	assert_eq!(output_path, expected_fetch_root.join("guide.md").as_path());
 	assert_eq!(fs::read(output_path)?, b"# Guide\n".to_vec());
@@ -233,7 +228,10 @@ async fn test_process_fetch_resume_rebuilds_legacy_cache_layout() -> Result<()> 
 		.completed_items
 		.first()
 		.ok_or("Fetch should rebuild the artifact in the numbered cache")?;
-	let output_path = item.output_path.as_ref().ok_or("rebuilt Fetch item should have an output path")?;
+	let output_path = item
+		.output_path
+		.as_ref()
+		.ok_or("rebuilt Fetch item should have an output path")?;
 	let expected_artifact_path = destination.join(".tmp-zmapr").join("01-fetch").join("source.txt");
 	let output_path: &Path = output_path.as_ref();
 	assert_eq!(output_path, expected_artifact_path.as_path());
@@ -269,7 +267,7 @@ async fn test_process_fetch_without_fetch_rejects_legacy_cache_layout() -> Resul
 			"type": "local",
 			"include": [],
 			"exclude": [],
-			"format": "markdown"
+			"format": "md"
 		},
 		"artifact_root": path_text(&legacy_fetch_cache),
 		"items": []
@@ -808,10 +806,7 @@ async fn test_process_fetch_web_extensionless_path_defaults_html() -> Result<()>
 		.iter()
 		.map(|item| item.source.as_str())
 		.collect::<Vec<_>>();
-	assert_eq!(
-		completed_sources,
-		vec!["concepts/arch.md", "index.md", "intro.md"]
-	);
+	assert_eq!(completed_sources, vec!["concepts/arch.md", "index.md", "intro.md"]);
 
 	let fetch_dir = destination.join(".tmp-zmapr").join("01-fetch");
 	assert!(fetch_dir.join("index.md").is_file());
@@ -861,20 +856,20 @@ async fn test_process_fetch_local_html_formats_and_path_collisions() -> Result<(
 	// -- Check
 	assert_eq!(markdown_output.failures.len(), 2);
 	assert!(markdown_output.failures.iter().all(|failure| {
-		failure.message.contains("multiple input artifacts resolve to fetch path page.md")
+		failure
+			.message
+			.contains("multiple input artifacts resolve to fetch path page.md")
 	}));
-	assert!(!markdown_destination
-		.join(".tmp-zmapr")
-		.join("01-fetch")
-		.join("page.md")
-		.exists());
+	assert!(
+		!markdown_destination
+			.join(".tmp-zmapr")
+			.join("01-fetch")
+			.join("page.md")
+			.exists()
+	);
 
 	assert!(raw_output.failures.is_empty());
-	assert!(raw_destination
-		.join(".tmp-zmapr")
-		.join("01-fetch")
-		.join("page.html")
-		.is_file());
+	assert!(raw_destination.join(".tmp-zmapr").join("01-fetch").join("page.html").is_file());
 
 	assert!(slim_output.failures.is_empty());
 	let slim_path = slim_destination.join(".tmp-zmapr").join("01-fetch").join("page.html");

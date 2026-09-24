@@ -11,7 +11,7 @@ fn test_process_options_defaults() -> Result<()> {
 	assert_eq!(options.source, None);
 	assert!(options.include.is_empty());
 	assert!(options.exclude.is_empty());
-	assert_eq!(options.format, FetchFormat::Markdown);
+	assert_eq!(options.format, FetchFormat::Md);
 	assert_eq!(options.max_depth, 0);
 	assert!(options.llms);
 	assert!(!options.sanitize);
@@ -51,14 +51,8 @@ fn test_process_options_flat_chainable_configuration() -> Result<()> {
 
 	// -- Check
 	assert_eq!(options.source.as_deref(), Some("docs"));
-	assert_eq!(
-		options.include,
-		vec!["**/*.md", "README.md", "guide/*.md", "docs/*.md"]
-	);
-	assert_eq!(
-		options.exclude,
-		vec!["target/**", "tmp/**", "cache/**", "vendor/**"]
-	);
+	assert_eq!(options.include, vec!["**/*.md", "README.md", "guide/*.md", "docs/*.md"]);
+	assert_eq!(options.exclude, vec!["target/**", "tmp/**", "cache/**", "vendor/**"]);
 	assert_eq!(options.format, FetchFormat::Slim);
 	assert_eq!(options.max_depth, 3);
 	assert!(!options.llms);

@@ -476,9 +476,7 @@ mod tests {
 	#[test]
 	fn test_fetchr_types_manifest_options_serde_tagged_representation() -> Result<()> {
 		// -- Setup & Fixtures
-		let local_req = LocalFetchRequest::new("src")
-			.with_include(["*.rs"])
-			.with_exclude(["target/**"]);
+		let local_req = LocalFetchRequest::new("src").with_include(["*.rs"]).with_exclude(["target/**"]);
 		let local_options = FetchManifestOptions::from(&local_req);
 
 		let web_req = WebFetchRequest::new("https://example.com")
@@ -498,7 +496,7 @@ mod tests {
 
 		// -- Check
 		assert!(local_json.contains(r#""type":"local""#));
-		assert!(local_json.contains(r#""format":"markdown""#));
+		assert!(local_json.contains(r#""format":"md""#));
 		assert_eq!(local_deserialized, local_options);
 
 		assert!(web_json.contains(r#""type":"web""#));

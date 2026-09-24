@@ -1,9 +1,11 @@
-use zmapr::{ProcessContentOptions, process_content};
+use zmapr::{FetchFormat, ProcessContentOptions, process_content};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
 	let options = ProcessContentOptions::new("examples/.out/c02-http")
 		.with_source("https://docs.typesafe.ai/introduction")
+		.with_format(FetchFormat::Raw)
+		.with_llms(false)
 		.with_max_depth(1);
 
 	let handle = process_content(options).await?;

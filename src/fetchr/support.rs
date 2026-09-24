@@ -22,9 +22,8 @@ pub(crate) fn ensure_parent(path: &SPath) -> Result<()> {
 pub(crate) fn write_fetch_artifact(path: &SPath, contents: &[u8]) -> Result<()> {
 	ensure_parent(path)?;
 	let temporary_path = SPath::from(format!("{path}.tmp"));
-	write(temporary_path.as_std_path(), contents).map_err(|error| {
-		Error::MalformedState(format!("failed to write Fetch artifact {temporary_path}: {error}"))
-	})?;
+	write(temporary_path.as_std_path(), contents)
+		.map_err(|error| Error::MalformedState(format!("failed to write Fetch artifact {temporary_path}: {error}")))?;
 	rename(temporary_path.as_std_path(), path.as_std_path())
 		.map_err(|error| Error::MalformedState(format!("failed to replace Fetch artifact {path}: {error}")))?;
 	Ok(())
@@ -72,8 +71,8 @@ pub(crate) fn apply_fetch_format(
 		});
 	}
 
-	let html = std::str::from_utf8(bytes)
-		.map_err(|error| Error::custom(format!("HTML input is not valid UTF-8: {error}")))?;
+	let html =
+		std::str::from_utf8(bytes).map_err(|error| Error::custom(format!("HTML input is not valid UTF-8: {error}")))?;
 
 	match format {
 		FetchFormat::Raw => Ok(FormattedArtifact {
@@ -86,7 +85,7 @@ pub(crate) fn apply_fetch_format(
 			media_type: media_type.map(str::to_owned),
 			bytes: slim_html(html)?.into_bytes(),
 		}),
-		FetchFormat::Markdown => {
+		FetchFormat::Md => {
 			let mut path = PathBuf::from(relative_path);
 			path.set_extension("md");
 			let relative_path = path
@@ -317,8 +316,8 @@ mod tests {
 		// -- Exec
 		let raw = apply_fetch_format("page.html", Some("text/html"), html, FetchFormat::Raw)?;
 		let slimmed = apply_fetch_format("page.html", Some("text/html"), html, FetchFormat::Slim)?;
-		let markdown = apply_fetch_format("page.html", Some("text/html"), html, FetchFormat::Markdown)?;
-		let plain = apply_fetch_format("page.txt", Some("text/plain"), b"unchanged", FetchFormat::Markdown)?;
+		let markdown = apply_fetch_format("page.html", Some("text/html"), html, FetchFormat::Md)?;
+		let plain = apply_fetch_format("page.txt", Some("text/plain"), b"unchanged", FetchFormat::Md)?;
 
 		// -- Check
 		assert_eq!(raw.relative_path, "page.html");
