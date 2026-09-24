@@ -92,6 +92,17 @@ pub struct ProcessContentOptions {
 
 An empty workflow is invalid. `max_concurrency` must be greater than zero.
 
+## Core stages
+
+The core stages run in a fixed order: Fetch, Sanitize, AI Augment, then AI Content Map. Each stage is enabled by its corresponding optional field in `ProcessContentOptions`. Disabled stages pass the current artifact set through unchanged, except that disabling Fetch requires a valid prior Fetch result.
+
+| Stage | Intent | Configuration |
+|---|---|---|
+| Fetch | Selects and acquires local or web content for processing. | `FetchRequest` selects a local or web source. Common options provide `include` and `exclude` patterns. Local options configure `copy_local_files`; web options configure `same_host_only`, `follow_links`, `max_depth`, and `llms`. |
+| Sanitize | Mechanically prepares content for downstream stages by slimming HTML and/or converting supported content to Markdown. | `SanitizeOptions`: `slim_html` and `convert_to_markdown`. |
+| AI Augment | Uses an AI provider to clean up and format supported content. | `AiAugmentOptions`: `provider` and `model`. |
+| AI Content Map | Analyzes content and publishes a structured content map. | `ContentMapOptions`: `model`, `journal_path`, `reuse_unchanged_records`, `retain_journal`, `to_md`, `max_size`, and `max_cost` (not yet enforced). |
+
 ## Stage options
 
 ### Fetch
