@@ -4,7 +4,7 @@
 
 `zmapr` maps local or website content into AI-oriented context through one workflow function. The workflow runs the selected stages in a fixed order: Fetch, Sanitize, then Map. The returned handle lets callers observe progress, query state, and await the final output.
 
-Fetch only, using Markdown as the default format:
+Fetch only, using `FetchFormat::Md` (Markdown) as the default format:
 
 ```rust
 ProcessContentOptions::new("target/zmapr-docs")
@@ -60,6 +60,33 @@ impl ProcessContentHandle {
 }
 ```
 
+`ProgressRx` is a single-consumer receiver. It provides these operations:
+
+```rust
+impl ProgressRx {
+    pub async fn recv(&mut self) -> Result<ProgressUpdate>;
+    pub fn is_disconnected(&self) -> bool;
+}
+
+pub struct ProgressUpdate {
+    pub seq: u64,
+    pub event: ProgressEvent,
+    pub stats: ProgressStats,
+}
+
+pub enum ProgressEvent {
+    StageStarted { stage: ProcessStage },
+    StageCompleted { stage: ProcessStage },
+    StageFailed { stage: ProcessStage, message: String },
+    ItemsRegistered { stage: ProcessStage, count: usize },
+    ItemsExcluded { stage: ProcessStage, count: usize },
+    StageTotalKnown { stage: ProcessStage, total_items: usize },
+    ItemStatusChanged { id: ItemId, stage: ProcessStage, status: ItemStatus },
+    WorkflowCompleted,
+    WorkflowFailed { message: String },
+}
+```
+
 `ProcessQuery` provides authoritative live state independently of the progress receiver. Callers can read stage statistics, inspect items by run-scoped id or stored relative path, list ids by stage status, or request a point-in-time snapshot:
 
 ```rust
@@ -106,7 +133,7 @@ pub struct WebContentSource {
 }
 ```
 
-`ContentSource` represents a resolved local or web source when inspecting workflow state or prior manifests. Convenience constructors are provided through `ContentSource::local` and `ContentSource::web`. The flat workflow options accept the source as a local path or an HTTP(S) URL string.
+`ContentSource` is the typed local or web source representation used by the workflow. Convenience constructors are provided through `ContentSource::local` and `ContentSource::web`, and `From` implementations accept the corresponding source types and `SPath`. The flat workflow options store a source as a local path or an HTTP(S) URL string.
 
 ## Workflow options
 
@@ -136,7 +163,7 @@ pub struct ProcessContentOptions {
 
 Defaults are:
 
-- `format` is `FetchFormat::Markdown`.
+- `format` is `FetchFormat::Md`.
 - `max_depth` is `0`.
 - `llms` is `true`.
 - `sanitize`, `map`, and `resume` are `false`.
@@ -150,9 +177,9 @@ Builder methods are grouped by purpose:
 - AI stages: `with_sanitize`, `with_map`, `with_model`, `with_sanitize_model`, `with_map_model`, and `with_sanitize_prompt`.
 - Workflow: `with_resume` and `with_max_concurrency`.
 
-`FetchFormat` has `Raw`, `Slim`, and `Markdown` variants. `Markdown` is the default. `SanitizePrompt` has `FilePath(SPath)` and `Content(String)` variants, with `SanitizePrompt::file` and `SanitizePrompt::content` constructors.
+`FetchFormat` has `Raw`, `Slim`, and `Md` variants. `Md` is the default. `SanitizePrompt` has `FilePath(SPath)` and `Content(String)` variants, with `SanitizePrompt::file` and `SanitizePrompt::content` constructors.
 
-The Sanitize model resolves from `sanitize_model`, then `model`. The Map model resolves from `map_model`, then `model`. Every enabled AI stage requires a nonempty resolved model. The provider is selected from the model name.
+The Sanitize model resolves from `sanitize_model`, then `model`. The Map model resolves from `map_model`, then `model`. Every enabled AI stage requires a nonempty resolved model. The default AI selector passes the resolved model to `genai`; an active selector can substitute a stub or custom client.
 
 ## Core stages
 
@@ -162,11 +189,44 @@ The Sanitize model resolves from `sanitize_model`, then `model`. The Map model r
 | Sanitize | Uses an AI model to clean supported text while preserving substantive content. | Set `sanitize`; configure a model and, optionally, replacement instructions. |
 | Map | Analyzes current artifacts and publishes a structured content map. | Set `map` and configure a model. |
 
+## AI client selection
+
+The crate exposes a client trait and selector for AI-backed stages. The default selector is `Real`; `Stub` provides deterministic responses, and `Custom` accepts an application-provided client. Processing uses the active selector, which can be set or reset with `set_active_ai_selector`.
+
+```rust
+pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
+
+pub struct MaprAiResponse {
+    pub content: String,
+    pub usage: Option<genai::chat::Usage>,
+}
+
+pub trait MaprAiClient: Debug + Send + Sync {
+    fn complete<'a>(&'a self, prompt: &'a str) -> BoxFuture<'a, crate::Result<MaprAiResponse>>;
+}
+
+pub enum MaprAiSelector {
+    Real,
+    Stub,
+    Custom(Arc<dyn MaprAiClient>),
+}
+
+pub fn set_active_ai_selector(selector: Option<MaprAiSelector>);
+pub fn get_active_ai_selector() -> MaprAiSelector;
+pub fn select_ai_client(
+    selector: Option<&MaprAiSelector>,
+    model: &str,
+) -> Arc<dyn MaprAiClient>;
+pub fn select_active_ai_client(model: &str) -> Arc<dyn MaprAiClient>;
+```
+
 ## Fetch
 
 Fetch runs when `source` is set. An `http://` or `https://` source is treated as a web URL; any other source is treated as a local path. Local files and recursively selected directory files are copied into `.tmp-zmapr/01-fetch/`. Symbolic links are skipped.
 
 Include patterns are applied before exclusions. Exclusions take precedence, and selected paths are sorted by stable relative path. Local and web sources use the same patterns.
+
+The implemented matcher supports `*` within a path segment and `**` across zero or more path segments, rather than the full shell glob syntax. A leading `!` on an include pattern adds an exclusion; explicit exclude patterns are also exclusions.
 
 Web crawling is scoped to the base folder of the starting URL. The starting resource is fetched at depth zero. Linked pages are discovered and fetched up to `max_depth`; a value of zero fetches only the starting resource. When `llms` is enabled, Fetch probes for `llms.txt` at the remote base folder. Valid entries are downloaded directly while preserving the URL folder hierarchy. If the file is absent, empty, or has no valid entries, Fetch falls back to regular HTML link crawling. Scoped paths without an extension receive a default `.html` extension during regular crawling.
 
@@ -174,7 +234,7 @@ Fetch formats HTML detected by media type or by the `.html`, `.htm`, or `.xhtml`
 
 - `Raw` stores HTML bytes as received.
 - `Slim` slims HTML and keeps its path and media type.
-- `Markdown` slims HTML, converts it to Markdown, replaces its extension with `.md`, and sets the media type to `text/markdown`.
+- `Md` converts HTML to Markdown, replaces its extension with `.md`, and sets the media type to `text/markdown`.
 
 Non-UTF-8 HTML and transformation errors are reported as item failures. Fetch detects duplicate stored paths and reports collisions as item-level failures rather than silently accepting the conflicting path.
 
@@ -186,7 +246,7 @@ Sanitize processes the current artifact set from Fetch or a prior Fetch cache. I
 
 The engine adds the artifact's relative path, wraps the input in `<SANITIZE_INPUT>` tags, and asks the model to return cleaned content between `<SANITIZED_CONTENT>` tags. Missing output tags, model errors, and write errors are item failures.
 
-Successful output keeps the input relative path under `.tmp-zmapr/02-sanitize/`. Writes use a temporary sibling file followed by a rename. Items that are unsupported, too large, or not valid UTF-8 are copied unchanged to the Sanitize output and reported as skipped. Item processing is concurrent and bounded by `max_concurrency`. Per-item model usage is attached to successful `ProcessItem` results.
+Per-item model usage is attached to the successful `ItemStageState` and aggregated in the stage and workflow statistics.
 
 When `resume` is enabled, Sanitize reuses an output only if the manifest's model and instruction hash match, the input hash is unchanged, and the output still matches its recorded hash. The version 1 manifest is stored at `.tmp-zmapr/sanitize-manifest.json`.
 
@@ -194,7 +254,9 @@ When `resume` is enabled, Sanitize reuses an output only if the manifest's model
 
 Map analyzes the artifacts from the preceding stage directly. It does not create a prepared copy or transform the artifacts. Map keys are the upstream relative paths, such as `index.md`, and Map is terminal: it does not replace the current content artifacts.
 
-Map writes `<destination>/content-map.json`. The JSON contains a provenance header, `file_map`, `folder_map`, and `file_metadata`. The internal per-file size limit is 200,000 bytes. The journal is NDJSON at `.tmp-zmapr/content-map.journal.jsonl`, with records flushed as they are appended. Its fingerprint includes the model, prompt version, and input artifact root. Journal entries can be reused when `resume` is enabled and the input path and hash match. Incompatible journal headers are invalidated. The journal is retained for subsequent runs; prior records are cleared rather than reused when resume is disabled.
+Map writes `<destination>/content-map.json`. The version 1 JSON document contains a provenance header, `file_map`, `folder_map`, and `file_metadata`. The internal per-file size limit is 200,000 bytes. The journal is version 1 NDJSON at `.tmp-zmapr/content-map.journal.jsonl`; it has a header followed by file or folder success and failure records, though current Map execution records files only. Appended lines are flushed. Its fingerprint includes the model, prompt version, and input artifact root. With `resume` enabled, file entries are reused when the journal header matches and the input path and hash match. Incompatible journal headers are invalidated. With resume disabled, entries are not reused; a failure-free run clears the journal after publishing the map, while item failures leave records retained. Per-item Map tasks currently ignore journal append errors, so those errors are not surfaced as Map item failures.
+
+The versioned Map prompt (`PROMPT_VERSION` is currently 2) supplies a file path and content and requires a `<FILE_INFO>` block containing JSON fields for `summary`, `when_to_use`, `public_types`, `public_functions`, and `topics`. The list fields accept arrays or comma-separated strings. Missing fields default to empty values, and Markdown fences around the JSON are accepted. Topic normalization retains at most seven nonempty topics and truncates each to three words. Missing tags and malformed JSON become `MissingTag` and `MalformedResponse` item failures.
 
 ## Internal pipeline
 
@@ -253,17 +315,6 @@ pub struct ProcessContentOutput {
     pub stats: FinalStats,
 }
 
-pub struct ProcessItem {
-    pub source: String,
-    pub output_path: Option<SPath>,
-    pub stage: ProcessStage,
-    pub usage: Option<genai::chat::Usage>,
-}
-
-pub struct ProcessFailure {
-    pub item: ProcessItem,
-    pub message: String,
-}
 
 pub enum ProcessStage {
     Fetch,
