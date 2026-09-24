@@ -1,6 +1,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
+use serde_json::json;
 use zmapr::{
 	AiAugmentOptions, ContentMapOptions, Error, LocalFetchRequest, ProcessContentOptions, ProcessProgress,
 	ProcessStage, WebFetchRequest, process_content,
@@ -106,7 +107,7 @@ async fn test_process_fetch_copies_directory_artifacts_and_publishes_manifest() 
 	assert!(second_path.is_file());
 	assert_eq!(fs::read(second_path.as_std_path())?, b"beta\n".to_vec());
 
-	let expected_root = destination.join(".tmp-zmapr").join("fetch");
+	let expected_root = destination.join(".tmp-zmapr").join("01-fetch");
 	let content_root: &Path = output.content_root.as_ref();
 	assert_eq!(content_root, expected_root.as_path());
 
@@ -179,6 +180,119 @@ async fn test_process_fetch_resume_reuses_and_rebuilds_state() -> Result<()> {
 	assert!(fourth_output.skipped_items.is_empty());
 	let changed_hash = manifest_hash(&manifest_path)?;
 	assert_ne!(original_hash, changed_hash);
+
+	Ok(())
+}
+
+#[tokio::test]
+async fn test_process_fetch_resume_rebuilds_legacy_cache_layout() -> Result<()> {
+	// -- Setup & Fixtures
+	let root = fixture_root("test_process_fetch_resume_rebuilds_legacy_cache_layout")?;
+	let source_path = root.join("source.txt");
+	fs::write(&source_path, b"source\n")?;
+	let destination = root.join("destination");
+
+	let first_handle = process_content(local_fetch_options(&source_path, &destination, true, false)).await?;
+	let first_output = first_handle.wait_output().await?;
+	let first_item = first_output
+		.completed_items
+		.first()
+		.ok_or("initial Fetch should contain one item")?;
+	let artifact_path = first_item
+		.output_path
+		.as_ref()
+		.ok_or("initial Fetch item should have an artifact path")?
+		.as_std_path()
+		.to_path_buf();
+	let legacy_fetch_cache = destination.join(".tmp-zmapr").join("fetch");
+	fs::create_dir_all(&legacy_fetch_cache)?;
+	let legacy_artifact_path = legacy_fetch_cache.join("source.txt");
+	fs::copy(&artifact_path, &legacy_artifact_path)?;
+
+	let manifest_path = first_output
+		.manifest_path
+		.as_ref()
+		.ok_or("initial Fetch should publish a manifest")?
+		.as_std_path()
+		.to_path_buf();
+	let mut manifest: serde_json::Value = serde_json::from_slice(&fs::read(&manifest_path)?)?;
+	manifest["artifact_root"] = json!(path_text(&legacy_fetch_cache));
+	manifest["items"][0]["artifact_path"] = json!(path_text(&legacy_artifact_path));
+	fs::write(&manifest_path, serde_json::to_vec(&manifest)?)?;
+	fs::remove_file(&artifact_path)?;
+
+	// -- Exec
+	let second_handle = process_content(local_fetch_options(&source_path, &destination, true, true)).await?;
+	let second_output = second_handle.wait_output().await?;
+
+	// -- Check
+	assert_eq!(second_output.completed_items.len(), 1);
+	assert!(second_output.skipped_items.is_empty());
+
+	let item = second_output
+		.completed_items
+		.first()
+		.ok_or("Fetch should rebuild the artifact in the numbered cache")?;
+	let output_path = item.output_path.as_ref().ok_or("rebuilt Fetch item should have an output path")?;
+	let expected_artifact_path = destination.join(".tmp-zmapr").join("01-fetch").join("source.txt");
+	let output_path: &Path = output_path.as_ref();
+	assert_eq!(output_path, expected_artifact_path.as_path());
+	assert!(expected_artifact_path.is_file());
+
+	let updated_manifest: serde_json::Value = serde_json::from_slice(&fs::read(&manifest_path)?)?;
+	let expected_artifact_root = path_text(&destination.join(".tmp-zmapr").join("01-fetch"));
+	assert_eq!(
+		updated_manifest.get("artifact_root").and_then(serde_json::Value::as_str),
+		Some(expected_artifact_root.as_str())
+	);
+
+	Ok(())
+}
+
+#[tokio::test]
+async fn test_process_fetch_without_fetch_rejects_legacy_cache_layout() -> Result<()> {
+	// -- Setup & Fixtures
+	let root = fixture_root("test_process_fetch_without_fetch_rejects_legacy_cache_layout")?;
+	let source_path = root.join("source.txt");
+	fs::write(&source_path, b"source\n")?;
+	let destination = root.join("destination");
+	let metadata_root = destination.join(".tmp-zmapr");
+	let legacy_fetch_cache = metadata_root.join("fetch");
+	fs::create_dir_all(&metadata_root)?;
+
+	let manifest = json!({
+		"version": 3,
+		"complete": true,
+		"source": path_text(&source_path),
+		"source_path": path_text(&source_path),
+		"options": {
+			"type": "local",
+			"include": [],
+			"exclude": [],
+			"copy_local_files": true
+		},
+		"artifact_root": path_text(&legacy_fetch_cache),
+		"items": []
+	});
+	fs::write(metadata_root.join("manifest.json"), serde_json::to_vec(&manifest)?)?;
+
+	let options = ProcessContentOptions::new(path_text(&destination))
+		.with_ai_augment(AiAugmentOptions::new("test-provider", "test-model"));
+
+	// -- Exec
+	let handle = process_content(options).await?;
+	let result = handle.wait_output().await;
+
+	// -- Check
+	let error = match result {
+		Err(error) => error,
+		Ok(_) => return Err("legacy Fetch cache should be rejected when Fetch is disabled".into()),
+	};
+	let message = match error {
+		Error::MalformedState(message) => message,
+		_ => return Err("legacy Fetch cache should return a malformed-state error".into()),
+	};
+	assert!(message.contains("rerun Fetch"));
 
 	Ok(())
 }
@@ -358,7 +472,7 @@ async fn test_process_fetch_web_crawls_and_reports_progress() -> Result<()> {
 		vec!["index.html", "page1.html", "page2.html", "sub/page3.html"]
 	);
 
-	let fetch_dir = destination.join(".tmp-zmapr").join("fetch");
+	let fetch_dir = destination.join(".tmp-zmapr").join("01-fetch");
 	assert!(fetch_dir.join("index.html").is_file());
 	assert!(fetch_dir.join("page1.html").is_file());
 	assert!(fetch_dir.join("page2.html").is_file());
@@ -450,7 +564,7 @@ async fn test_process_fetch_web_respects_max_depth() -> Result<()> {
 		.collect::<Vec<_>>();
 	assert_eq!(completed_sources, vec!["index.html", "level1.html"]);
 
-	let fetch_dir = destination.join(".tmp-zmapr").join("fetch");
+	let fetch_dir = destination.join(".tmp-zmapr").join("01-fetch");
 	assert!(fetch_dir.join("index.html").is_file());
 	assert!(fetch_dir.join("level1.html").is_file());
 	assert!(!fetch_dir.join("level2.html").exists());
@@ -542,7 +656,7 @@ async fn test_process_fetch_web_llms_discovery_and_fetch() -> Result<()> {
 		.collect::<Vec<_>>();
 	assert_eq!(completed_sources, vec!["concepts/arch.md", "intro.md", "llms.txt"]);
 
-	let fetch_dir = destination.join(".tmp-zmapr").join("fetch");
+	let fetch_dir = destination.join(".tmp-zmapr").join("01-fetch");
 	assert!(fetch_dir.join("llms.txt").is_file());
 	assert!(fetch_dir.join("intro.md").is_file());
 	assert!(fetch_dir.join("concepts").join("arch.md").is_file());
@@ -608,7 +722,7 @@ async fn test_process_fetch_web_llms_fallback_on_missing() -> Result<()> {
 		.collect::<Vec<_>>();
 	assert_eq!(completed_sources, vec!["index.html", "page1.html"]);
 
-	let fetch_dir = destination.join(".tmp-zmapr").join("fetch");
+	let fetch_dir = destination.join(".tmp-zmapr").join("01-fetch");
 	assert!(fetch_dir.join("index.html").is_file());
 	assert!(fetch_dir.join("page1.html").is_file());
 
@@ -668,7 +782,7 @@ async fn test_process_fetch_web_llms_fallback_on_empty() -> Result<()> {
 		.collect::<Vec<_>>();
 	assert_eq!(completed_sources, vec!["index.html", "page1.html"]);
 
-	let fetch_dir = destination.join(".tmp-zmapr").join("fetch");
+	let fetch_dir = destination.join(".tmp-zmapr").join("01-fetch");
 	assert!(fetch_dir.join("index.html").is_file());
 	assert!(fetch_dir.join("page1.html").is_file());
 
@@ -727,7 +841,7 @@ async fn test_process_fetch_web_extensionless_path_defaults_html() -> Result<()>
 		vec!["concepts/arch.html", "index.html", "intro.html"]
 	);
 
-	let fetch_dir = destination.join(".tmp-zmapr").join("fetch");
+	let fetch_dir = destination.join(".tmp-zmapr").join("01-fetch");
 	assert!(fetch_dir.join("index.html").is_file());
 	assert!(fetch_dir.join("intro.html").is_file());
 	assert!(fetch_dir.join("concepts").join("arch.html").is_file());

@@ -35,6 +35,14 @@ pub struct FolderMapEntry {
 	pub topics: Vec<String>,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct FileMapMetadata {
+	pub last_modified_unix_nanos: Option<u64>,
+	pub source_hash: String,
+	pub prepared_path: String,
+	pub prepared_hash: String,
+}
+
 /// Serialized document written to `content-map.json`, carrying provenance metadata.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ContentMapDocument {
@@ -44,6 +52,8 @@ pub struct ContentMapDocument {
 	pub generated_at: String,
 	pub file_map: BTreeMap<String, FileMapEntry>,
 	pub folder_map: BTreeMap<String, FolderMapEntry>,
+	#[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+	pub file_metadata: BTreeMap<String, FileMapMetadata>,
 }
 
 // endregion: --- Types
@@ -63,6 +73,7 @@ impl ContentMapDocument {
 			generated_at: generated_at.into(),
 			file_map,
 			folder_map,
+			file_metadata: BTreeMap::new(),
 		}
 	}
 
@@ -79,5 +90,10 @@ impl ContentMapDocument {
 			content_map.file_map,
 			content_map.folder_map,
 		)
+	}
+
+	pub fn with_file_metadata(mut self, file_metadata: BTreeMap<String, FileMapMetadata>) -> Self {
+		self.file_metadata = file_metadata;
+		self
 	}
 }

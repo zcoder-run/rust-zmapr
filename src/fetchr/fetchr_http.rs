@@ -1063,7 +1063,7 @@ https://docs.typesafe.ai/doc/page2.md#anchor
 
 		let test_id = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_millis();
 		let dest = SPath::from(format!("tests-data/.tmp/test_http_fetch_{test_id}"));
-		let fetch_cache = dest.join(".tmp-zmapr/fetch");
+		let fetch_cache = dest.join(".tmp-zmapr/01-fetch");
 		let manifest = dest.join(".tmp-zmapr/manifest.json");
 
 		let request = WebFetchRequest::new(format!("http://127.0.0.1:{port}/"))
@@ -1080,6 +1080,7 @@ https://docs.typesafe.ai/doc/page2.md#anchor
 			fetch_cache: fetch_cache.clone(),
 			sanitize_output: dest.join(".tmp-zmapr/stages/sanitize"),
 			ai_augment_output: dest.join(".tmp-zmapr/stages/ai-augment"),
+				mapper_output: dest.join(".tmp-zmapr/02-map"),
 			manifest: manifest.clone(),
 			journal: dest.join(".tmp-zmapr/content-map.journal.jsonl"),
 			content_map: dest.join("content-map.json"),

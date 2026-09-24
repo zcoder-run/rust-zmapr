@@ -8,8 +8,7 @@ use std::path::Path;
 // region:    --- Support
 
 pub fn hash_file_bytes(bytes: &[u8]) -> String {
-	let hash = blake3::hash(bytes);
-	bs58::encode(hash.as_bytes()).into_string()
+	crate::support::hash_bytes(bytes)
 }
 
 pub fn hash_file(path: impl AsRef<Path>) -> Result<String> {

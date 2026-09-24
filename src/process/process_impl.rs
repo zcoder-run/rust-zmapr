@@ -19,6 +19,7 @@ pub async fn process_content(options: ProcessContentOptions) -> Result<ProcessCo
 		fetch_cache: layout.fetch_cache,
 		sanitize_output: layout.sanitize_output,
 		ai_augment_output: layout.ai_augment_output,
+		mapper_output: layout.mapper_output,
 		manifest: layout.manifest,
 		journal: layout.journal,
 		content_map: layout.content_map,
@@ -45,6 +46,7 @@ struct WorkflowLayout {
 	fetch_cache: SPath,
 	sanitize_output: SPath,
 	ai_augment_output: SPath,
+	mapper_output: SPath,
 	manifest: SPath,
 	journal: SPath,
 	content_map: SPath,
@@ -175,9 +177,10 @@ fn resolve_layout(options: &ProcessContentOptions) -> WorkflowLayout {
 
 	WorkflowLayout {
 		destination,
-		fetch_cache: metadata_root.join("fetch"),
+		fetch_cache: metadata_root.join("01-fetch"),
 		sanitize_output: metadata_root.join("stages/sanitize"),
 		ai_augment_output: metadata_root.join("stages/ai-augment"),
+		mapper_output: metadata_root.join("02-map"),
 		manifest: metadata_root.join("manifest.json"),
 		journal: metadata_root.join("content-map.journal.jsonl"),
 		content_map: options.destination.join("content-map.json"),

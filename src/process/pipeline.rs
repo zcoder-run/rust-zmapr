@@ -17,6 +17,7 @@ pub(crate) struct WorkflowContext {
 	pub(crate) fetch_cache: SPath,
 	pub(crate) sanitize_output: SPath,
 	pub(crate) ai_augment_output: SPath,
+	pub(crate) mapper_output: SPath,
 	pub(crate) manifest: SPath,
 	pub(crate) journal: SPath,
 	pub(crate) content_map: SPath,

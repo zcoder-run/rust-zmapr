@@ -36,7 +36,7 @@ pub(crate) fn hash_file(path: &SPath) -> Result<String> {
 }
 
 pub(crate) fn hash_bytes(contents: &[u8]) -> String {
-	bs58::encode(blake3::hash(contents).as_bytes()).into_string()
+	crate::support::hash_bytes(contents)
 }
 
 pub(crate) fn media_type_for(path: &Path) -> Option<String> {

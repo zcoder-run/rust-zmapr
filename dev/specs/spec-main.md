@@ -35,7 +35,7 @@ impl ProcessContentHandle {
 }
 ```
 
-AI Augment and AI Content Map are modeled by the public API but remain deferred until their implementations are available.
+AI Augment is modeled by the public API but remains deferred. AI Content Map is implemented as described below.
 
 ## Architecture
 
@@ -133,7 +133,7 @@ pub struct WebFetchOptions {
 
 Fetch selects local files or crawls websites. Common include and exclude patterns are shared across sources: include patterns are applied before exclusions, exclusions take precedence, and selected paths are sorted by stable relative path. Local directory traversal is recursive and skips symbolic links.
 
-For local sources, Fetch either copies files below `.tmp-zmapr/fetch` or retains their original paths according to `copy_local_files`. It records source-relative paths and stable content hashes.
+For local sources, Fetch either copies files below `.tmp-zmapr/01-fetch/` or retains their original paths according to `copy_local_files`. It records source-relative paths and stable content hashes.
 
 Website Fetch crawls from the starting URL, scoping candidate links to the starting URL base folder, and optionally following links while respecting `same_host_only` and `max_depth` settings. When `llms` is enabled, Fetch probes for an `llms.txt` file at the remote base folder URL before crawling. If `llms.txt` is discovered and contains valid entries, Fetch downloads the listed documents directly, mirroring the remote URL folder hierarchy locally and using the final URL path segment for the file name. If `llms.txt` is absent, empty, or unparseable, Fetch transparently falls back to regular HTML link crawling. In regular HTML crawling, scoped download paths without a file extension automatically receive a default `.html` extension.
 
@@ -169,12 +169,13 @@ pub struct ContentMapOptions {
     pub journal_path: Option<SPath>,
     pub reuse_unchanged_records: bool,
     pub retain_journal: bool,
+    pub to_md: Option<bool>,
     pub max_size: Option<usize>,
     pub max_cost: Option<f64>,
 }
 ```
 
-AI Content Map analyzes the latest artifact set and publishes `content-map.json`. It is terminal, so it does not replace the current content artifacts. File and folder analysis is journaled in an append-only NDJSON file (`.tmp-zmapr/content-map.journal.jsonl` or a custom `journal_path`) with immediate record flushes and crash recovery. Records are reused when the journal header fingerprint (blake3 hash of model, prompt version, and artifact root) matches and the item source content hash is unchanged. On header or version mismatch, the journal is invalidated and rebuilt from scratch. When `retain_journal` is false, the journal is removed upon successful publication.
+AI Content Map prepares a separate copy of the artifacts received from its upstream stage under `.tmp-zmapr/02-map/` and analyzes that copy without changing source or upstream artifacts. Each artifact is copied when its item is processed, including items later skipped. When `to_md` is enabled, HTML is converted to Markdown and the prepared `.md` file is stored instead of an HTML copy. The published `<destination>/content-map.json` is the only content-map output; no `content-map.md` is published. The JSON includes per-file source modification time, source hash, prepared path, and prepared-content hash metadata. AI Content Map is terminal, so it does not replace the current content artifacts. File and folder analysis is journaled in an append-only NDJSON file (`.tmp-zmapr/content-map.journal.jsonl` or a custom `journal_path`) with immediate record flushes and crash recovery. File records identify the prepared relative paths in `02-map/` and use hashes of prepared content. Records are reusable when the journal header fingerprint (blake3 hash of model, prompt version, and artifact root) matches and the prepared input is unchanged. Valid journal entries are reconciled into a partial `content-map.json` before AI processing continues. On header or version mismatch, the journal is invalidated and rebuilt from scratch. When `retain_journal` is false, the journal is removed upon successful publication.
 
 ## Internal pipeline
 
@@ -206,7 +207,8 @@ All generated state is rooted at the configured destination:
 ```text
 <destination>/
 ├── .tmp-zmapr/
-│   ├── fetch/
+│   ├── 01-fetch/
+│   ├── 02-map/
 │   ├── stages/
 │   │   ├── sanitize/
 │   │   └── ai-augment/
@@ -228,7 +230,7 @@ AI Augment has nonempty provider and model values, and Content Map has a nonempt
 - Downstream processing without Fetch has a valid existing Fetch cache and manifest.
 - Deferred stages return structured `Unsupported` errors.
 
-The manifest records enough source and configuration identity to support resume. The initial resume behavior may reuse only a complete matching Fetch result. Missing, incompatible, or incomplete state is rebuilt rather than treated as reusable.
+The initial resume behavior may reuse only a complete matching Fetch result under `.tmp-zmapr/01-fetch/`. A Fetch run rebuilds legacy cache state rather than reusing artifacts from the old Fetch path. When Fetch is disabled, incompatible legacy cache state is rejected rather than treated as valid prior output. Missing, incompatible, or incomplete state is rebuilt rather than treated as reusable.
 
 Durable publication should use deterministic serialization and atomic replacement. Temporary sibling files are written first, then renamed into their final locations.
 
@@ -291,9 +293,16 @@ pub struct FolderMapEntry {
     pub when_to_use: String,
     pub topics: Vec<String>,
 }
+
+pub struct FileMapMetadata {
+    pub last_modified_unix_nanos: Option<u64>,
+    pub source_hash: String,
+    pub prepared_path: String,
+    pub prepared_hash: String,
+}
 ```
 
-The serialized document `content-map.json` contains a provenance header (`version`, `model`, `prompt_version`, `generated_at`) alongside `file_map` and `folder_map`. `file_map` indexes relative file paths to their summaries, usage guidance, public symbols, and topics. `folder_map` is currently emitted as an empty map for future folder summaries. Folder entries intentionally do not include code-specific public type or function fields.
+The serialized document `content-map.json` contains a provenance header (`version`, `model`, `prompt_version`, `generated_at`) alongside `file_map`, `folder_map`, and `file_metadata`. `file_map` indexes source-relative file paths to their summaries, usage guidance, public symbols, and topics. `file_metadata` records source timestamps and hashes together with the prepared mapper path and prepared-content hash. `folder_map` is currently emitted as an empty map for future folder summaries. Folder entries intentionally do not include code-specific public type or function fields. The only published map is `<destination>/content-map.json`.
 
 ## Errors
 

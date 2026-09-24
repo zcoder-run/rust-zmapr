@@ -491,7 +491,7 @@ fn validate_prior_manifest(manifest: &FetchManifest, context: &WorkflowContext) 
 		let expected_artifact_root = path_to_string(&context.fetch_cache)?;
 		if manifest.artifact_root != expected_artifact_root {
 			return Err(Error::MalformedState(
-				"Fetch manifest artifact root is incompatible with the workflow cache".to_owned(),
+				"Fetch artifact root is incompatible with the current cache; rerun Fetch to rebuild it".to_owned(),
 			));
 		}
 	}
