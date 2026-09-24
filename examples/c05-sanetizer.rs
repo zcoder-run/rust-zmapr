@@ -30,7 +30,7 @@ async fn print_progress(mut progress_rx: ProgressRx) {
 	while let Ok(event) = progress_rx.recv().await {
 		match event {
 			ProcessProgress::ItemCompleted { item } | ProcessProgress::ItemSkipped { item } => {
-				println!(" - {}", item.source);
+				println!("{:?} - {}", item.stage, item.source);
 			}
 			ProcessProgress::ItemFailed { failure } => {
 				println!(" - (FAIL) {} (cause: {})", failure.item.source, failure.message);

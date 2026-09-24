@@ -222,7 +222,7 @@ pub(crate) async fn execute_sanitize(
 	}
 
 	while let Some(result) = join_set.join_next().await {
-		match result.map_err(|error| Error::custom(format!("Sanitize task failed: {error}")))? {
+		match result.map_err(|error| Error::TaskJoin(format!("Sanitize task failed: {error}")))? {
 			Ok((artifact, process_item, manifest_item)) => {
 				artifacts.push(artifact);
 				completed_items.push(process_item);

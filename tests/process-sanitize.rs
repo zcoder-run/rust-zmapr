@@ -319,7 +319,49 @@ async fn test_process_sanitize_resume_reuses_unchanged_items_and_invalidates_cha
 	Ok(())
 }
 
+#[tokio::test]
+async fn test_process_sanitize_task_panic_returns_task_join_error() -> Result<()> {
+	let _guard = TEST_MUTEX.lock().await;
+	set_active_ai_selector(Some(MaprAiSelector::Custom(Arc::new(PanickingSanitizeAiClient))));
+
+	// -- Setup & Fixtures
+	let root = fixture_root("test_process_sanitize_task_panic_returns_task_join_error")?;
+	let source_root = root.join("source");
+	fs::create_dir_all(&source_root)?;
+	fs::write(source_root.join("panic.md"), b"# Panic\nTrigger a task panic.")?;
+	let destination = root.join("destination");
+	let options = ProcessContentOptions::new(path_text(&destination))
+		.with_source(path_text(&source_root))
+		.with_sanitize(true)
+		.with_model("custom-model");
+
+	// -- Exec
+	let handle = process_content(options).await?;
+	let error = handle.wait_output().await.err().ok_or("expected Sanitize task join error")?;
+	set_active_ai_selector(None);
+
+	// -- Check
+	assert!(matches!(error, zmapr::Error::TaskJoin(_)));
+
+	Ok(())
+}
+
 // region:    --- Support
+
+#[derive(Debug)]
+struct PanickingSanitizeAiClient;
+
+impl MaprAiClient for PanickingSanitizeAiClient {
+	fn complete<'a>(&'a self, prompt: &'a str) -> zmapr::BoxFuture<'a, zmapr::Result<MaprAiResponse>> {
+		Box::pin(async move {
+			if prompt.is_empty() {
+				Ok(MaprAiResponse::new(""))
+			} else {
+				panic!("simulated Sanitize task panic")
+			}
+		})
+	}
+}
 
 #[derive(Debug)]
 struct PromptCheckingAiClient;

@@ -6,7 +6,7 @@ use crate::mapr::{
 use crate::process::pipeline::{ArtifactItem, ArtifactSet, StageOutput, WorkflowContext};
 use crate::process::{ProcessFailure, ProcessItem, ProcessProgress, ProcessStage};
 use crate::support::hash_bytes;
-use crate::Result;
+use crate::{Error, Result};
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Arc;
@@ -221,7 +221,9 @@ pub(crate) async fn execute_content_map(
 	}
 
 	while let Some(res) = join_set.join_next().await {
-		if let Ok(Some(item_outcome)) = res {
+		if let Some(item_outcome) =
+			res.map_err(|error| Error::TaskJoin(format!("Map task failed: {error}")))?
+		{
 			match item_outcome {
 				Ok((rel_path, process_item, entry)) => {
 					file_map.insert(rel_path, entry);

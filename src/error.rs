@@ -13,6 +13,12 @@ pub enum Error {
 
 	Unsupported(String),
 
+	MissingTag(String),
+
+	MalformedResponse(String),
+
+	TaskJoin(String),
+
 	InvalidCache(String),
 
 	MalformedState(String),

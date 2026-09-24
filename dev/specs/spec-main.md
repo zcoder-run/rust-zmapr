@@ -312,9 +312,13 @@ The crate exposes a `Result<T>` alias and a structured `Error` enum. Workflow er
 - `InvalidConfiguration`, for incompatible options or invalid sources.
 - `InvalidCache`, for missing or invalid prior artifacts.
 - `MalformedState`, for missing or invalid durable workflow state.
-- Dedicated I/O and HTTP error variants for external failures.
+- `MissingTag`, for required tags missing from AI responses.
+- `MalformedResponse`, for invalid AI response data, such as malformed Map response JSON.
+- `TaskJoin`, when a background Map or Sanitize task fails.
+- `Unsupported`, for unsupported operations.
+- Dedicated I/O, filesystem, HTTP, and HTTP header conversion variants for external failures.
 
-Expected workflow failures are returned as errors or retained as item-level failures; production paths do not panic for them.
+Expected workflow failures are returned as errors or retained as item-level failures. Provider errors, missing response tags, and malformed Map responses encountered during per-item AI processing remain item-level failures, preserving successful work from the same stage. Background task join failures are returned as workflow errors. Production paths do not panic for expected workflow failures.
 
 ## Implementation scope
 

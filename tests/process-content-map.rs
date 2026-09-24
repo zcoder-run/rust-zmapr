@@ -440,6 +440,48 @@ async fn test_process_content_map_item_failure_is_recorded_and_stage_completes()
 }
 
 #[derive(Debug)]
+struct PanickingMapAiClient;
+
+impl MaprAiClient for PanickingMapAiClient {
+	fn complete<'a>(&'a self, prompt: &'a str) -> zmapr::BoxFuture<'a, zmapr::Result<zmapr::MaprAiResponse>> {
+		Box::pin(async move {
+			if prompt.is_empty() {
+				Ok(zmapr::MaprAiResponse::new(""))
+			} else {
+				panic!("simulated Map task panic")
+			}
+		})
+	}
+}
+
+#[tokio::test]
+async fn test_process_content_map_task_panic_returns_task_join_error() -> Result<()> {
+	let _guard = TEST_MUTEX.lock().await;
+	set_active_ai_selector(Some(MaprAiSelector::Custom(Arc::new(PanickingMapAiClient))));
+
+	// -- Setup & Fixtures
+	let root = fixture_root("test_process_content_map_task_panic_returns_task_join_error")?;
+	let source_root = root.join("source");
+	fs::create_dir_all(&source_root)?;
+	fs::write(source_root.join("panic.md"), b"# Panic\nTrigger a task panic.")?;
+	let destination = root.join("destination");
+	let options = ProcessContentOptions::new(path_text(&destination))
+		.with_source(path_text(&source_root))
+		.with_map(true)
+		.with_model("custom-model");
+
+	// -- Exec
+	let handle = process_content(options).await?;
+	let error = handle.wait_output().await.err().ok_or("expected Map task join error")?;
+	set_active_ai_selector(None);
+
+	// -- Check
+	assert!(matches!(error, zmapr::Error::TaskJoin(_)));
+
+	Ok(())
+}
+
+#[derive(Debug)]
 struct ExactUsageAiClient;
 
 impl MaprAiClient for ExactUsageAiClient {

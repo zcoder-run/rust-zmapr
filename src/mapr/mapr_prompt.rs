@@ -74,22 +74,22 @@ pub fn parse_file_info(response: &str) -> Result<FileMapEntry> {
 
 	let start_idx = response
 		.find(start_tag)
-		.ok_or_else(|| Error::custom("missing <FILE_INFO> tag in AI response"))?
+		.ok_or_else(|| Error::MissingTag(format!("missing {start_tag} tag in AI response")))?
 		+ start_tag.len();
 
 	let parts = tag::extract(response, &["FILE_INFO"], TagOptions::default());
 	let Some(tag_elem) = parts.tag_elems().into_iter().next() else {
 		let error = if response.contains(start_tag) {
-			Error::custom(format!("missing {end_tag} tag in AI response"))
+			Error::MissingTag(format!("missing {end_tag} tag in AI response"))
 		} else {
-			Error::custom(format!("missing {start_tag} tag in AI response"))
+			Error::MissingTag(format!("missing {start_tag} tag in AI response"))
 		};
 		return Err(error);
 	};
 	let clean_json = strip_markdown_fences(&tag_elem.content);
 
 	let raw_info: RawFileInfo = serde_json::from_str(clean_json)
-		.map_err(|err| Error::custom(format!("failed to parse FILE_INFO JSON: {err}")))?;
+		.map_err(|err| Error::MalformedResponse(format!("failed to parse FILE_INFO JSON: {err}")))?;
 
 	let public_types = raw_info
 		.public_types
@@ -301,8 +301,9 @@ mod tests {
 
 		// -- Check
 		assert!(res.is_err());
-		let err_msg = res.err().ok_or("expected error")?.to_string();
-		assert!(err_msg.contains("missing <FILE_INFO> tag"));
+		let error = res.err().ok_or("expected error")?;
+		assert!(matches!(&error, Error::MissingTag(_)));
+		assert!(error.to_string().contains("missing <FILE_INFO> tag"));
 
 		Ok(())
 	}
@@ -317,8 +318,9 @@ mod tests {
 
 		// -- Check
 		assert!(res.is_err());
-		let err_msg = res.err().ok_or("expected error")?.to_string();
-		assert!(err_msg.contains("missing </FILE_INFO> tag"));
+		let error = res.err().ok_or("expected error")?;
+		assert!(matches!(&error, Error::MissingTag(_)));
+		assert!(error.to_string().contains("missing </FILE_INFO> tag"));
 
 		Ok(())
 	}
@@ -333,7 +335,9 @@ mod tests {
 
 		// -- Check
 		assert!(res.is_err());
-		let err_msg = res.err().ok_or("expected error")?.to_string();
+		let error = res.err().ok_or("expected malformed response error")?;
+		assert!(matches!(&error, Error::MalformedResponse(_)));
+		let err_msg = error.to_string();
 		assert!(err_msg.contains("failed to parse FILE_INFO JSON"));
 
 		Ok(())
