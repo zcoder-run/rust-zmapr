@@ -5,7 +5,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 	let options = ProcessContentOptions::new("examples/.out/c04-mapr")
 		.with_source("https://docs.rs/genai/0.7.0-beta.23/genai/")
 		.with_max_depth(1)
-		.with_llms(true)
 		.with_map(true)
 		.with_model("gpt-6-luna");
 

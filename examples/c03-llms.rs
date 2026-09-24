@@ -1,11 +1,11 @@
-use zmapr::{ProcessContentOptions, ProcessProgress, process_content};
+use zmapr::{FetchFormat, ProcessContentOptions, ProcessProgress, process_content};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
 	let options = ProcessContentOptions::new("examples/.out/c03-llms")
 		.with_source("https://docs.typesafe.ai/introduction")
-		.with_max_depth(1)
-		.with_llms(true); // default anyway
+		.with_llms(true) // default anyway
+		.with_max_depth(10);
 
 	let mut handle = process_content(options).await?;
 
