@@ -23,6 +23,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 	}
 	println!("Completed items: {}", output.completed_items.len());
 
+	let input_tokens = output.total_usage.as_ref().and_then(|usage| usage.prompt_tokens);
+	let output_tokens = output.total_usage.as_ref().and_then(|usage| usage.completion_tokens);
+	println!(
+		"Total input tokens: {}",
+		input_tokens.map_or_else(|| "unavailable".to_string(), |tokens| tokens.to_string())
+	);
+	println!(
+		"Total output tokens: {}",
+		output_tokens.map_or_else(|| "unavailable".to_string(), |tokens| tokens.to_string())
+	);
+
 	Ok(())
 }
 
