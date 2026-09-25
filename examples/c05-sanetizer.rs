@@ -15,11 +15,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 	// -- Track progress
 	let query = handle.query();
+
+	// -- Read current query statistics
+	let stats_task = tokio::spawn(async move {
+		tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+		let stats = query.stats();
+		println!(
+			"Fetch: {} of {} registered items completed",
+			stats.fetch.completed,
+			stats.fetch.registered_items()
+		);
+	});
 	let progress_rx = handle.take_progress_rx().ok_or("expected progress receiver")?;
-	let progress_task = tokio::spawn(print_progress(progress_rx, query));
+	let progress_task = tokio::spawn(print_progress(progress_rx, handle.query()));
 
 	let output = handle.wait_output().await?;
 	progress_task.await?;
+	stats_task.await?;
 
 	// -- Report results
 	println!("\n\nProcessed content into {}", output.content_root);

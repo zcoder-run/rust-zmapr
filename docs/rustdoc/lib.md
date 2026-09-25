@@ -29,11 +29,27 @@ use zmapr::{ProcessContentOptions, process_content};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+	// -- Configure workflow
 	let options = ProcessContentOptions::new("target/zmapr").with_source("src");
 	
+	// -- Start workflow
 	let handle = process_content(options).await?;
+
+	// -- Read current query statistics
+	let query = handle.query();
+	let stats_task = tokio::spawn(async move {
+		tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+		let stats = query.stats();
+		println!(
+			"Fetch: {} of {} registered items completed",
+			stats.fetch.completed,
+			stats.fetch.registered_items()
+		);
+	});
 	
+	// -- Wait for completion
 	let output = handle.wait_output().await?;
+	stats_task.await?;
 
 	println!("Fetched content into {}", output.content_root);
 	Ok(())
