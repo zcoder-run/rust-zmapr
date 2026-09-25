@@ -42,7 +42,9 @@ async fn test_process_fetch_local_file_returns_output_and_progress() -> Result<(
 	assert_eq!(fs::read(output_path)?, b"# Guide\n".to_vec());
 
 	let content_root: &Path = output.content_root.as_ref();
-	assert_eq!(content_root, expected_fetch_root.as_path());
+	assert_eq!(content_root, destination.as_path());
+	assert_eq!(fs::read(destination.join("guide.md"))?, b"# Guide\n".to_vec());
+	assert!(expected_fetch_root.join("guide.md").is_file());
 
 	let manifest_path = output.manifest_path.as_ref().ok_or("Fetch should publish a manifest")?;
 	assert!(manifest_path.is_file());
@@ -109,7 +111,11 @@ async fn test_process_fetch_copies_directory_artifacts_and_publishes_manifest() 
 
 	let expected_root = destination.join(".tmp-zmapr").join("01-fetch");
 	let content_root: &Path = output.content_root.as_ref();
-	assert_eq!(content_root, expected_root.as_path());
+	assert_eq!(content_root, destination.as_path());
+	assert_eq!(fs::read(destination.join("a.txt"))?, b"alpha\n");
+	assert_eq!(fs::read(destination.join("nested/b.txt"))?, b"beta\n");
+	assert_eq!(fs::read(expected_root.join("a.txt"))?, b"alpha\n");
+	assert_eq!(fs::read(expected_root.join("nested/b.txt"))?, b"beta\n");
 
 	let manifest_path = output.manifest_path.as_ref().ok_or("copied Fetch should publish a manifest")?;
 	let manifest: serde_json::Value = serde_json::from_str(&fs::read_to_string(manifest_path.as_std_path())?)?;
@@ -479,6 +485,53 @@ async fn test_process_fetch_invalid_local_source_returns_structured_error() -> R
 }
 
 #[tokio::test]
+async fn test_process_fetch_rejects_source_directory_equal_to_destination() -> Result<()> {
+	// -- Setup & Fixtures
+	let root = fixture_root("test_process_fetch_rejects_source_directory_equal_to_destination")?;
+	let destination = root.join("destination");
+	fs::create_dir_all(&destination)?;
+	fs::write(destination.join("guide.md"), b"# Guide\n")?;
+
+	// -- Exec
+	let result = process_content(local_fetch_options(&destination, &destination, false)).await;
+
+	// -- Check
+	let error = match result {
+		Err(error) => error,
+		Ok(_) => return Err("source directory equal to destination should be rejected".into()),
+	};
+	assert!(matches!(error, Error::InvalidConfiguration(_)));
+	assert!(!destination.join(".tmp-zmapr").exists());
+
+	Ok(())
+}
+
+#[tokio::test]
+async fn test_process_fetch_replaces_published_file_and_keeps_unrelated_files() -> Result<()> {
+	// -- Setup & Fixtures
+	let root = fixture_root("test_process_fetch_replaces_published_file_and_keeps_unrelated_files")?;
+	let source_root = root.join("source");
+	fs::create_dir_all(&source_root)?;
+	fs::write(source_root.join("guide.md"), b"# New guide\n")?;
+	let destination = root.join("destination");
+	fs::create_dir_all(&destination)?;
+	fs::write(destination.join("guide.md"), b"# Old guide\n")?;
+	fs::write(destination.join("unrelated.txt"), b"Keep this file.\n")?;
+
+	// -- Exec
+	let handle = process_content(local_fetch_options(&source_root, &destination, false)).await?;
+	let output = handle.wait_output().await?;
+
+	// -- Check
+	assert_eq!(fs::read(destination.join("guide.md"))?, b"# New guide\n");
+	assert_eq!(fs::read(destination.join("unrelated.txt"))?, b"Keep this file.\n");
+	assert!(destination.join(".tmp-zmapr").join("01-fetch").join("guide.md").is_file());
+	assert_eq!(output.content_root.as_std_path(), destination.as_path());
+
+	Ok(())
+}
+
+#[tokio::test]
 async fn test_process_fetch_web_source_invalid_url_returns_structured_error() -> Result<()> {
 	// -- Setup & Fixtures
 	let root = fixture_root("test_process_fetch_web_source_invalid_url_returns_structured_error")?;
@@ -589,6 +642,7 @@ async fn test_process_fetch_web_crawls_and_reports_progress() -> Result<()> {
 	assert!(fetch_dir.join("page1.md").is_file());
 	assert!(fetch_dir.join("page2.md").is_file());
 	assert!(fetch_dir.join("sub/page3.md").is_file());
+	assert!(destination.join("index.md").is_file());
 
 	let manifest_path = output.manifest_path.as_ref().ok_or("Web fetch should publish a manifest")?;
 	assert!(manifest_path.is_file());
@@ -981,6 +1035,7 @@ async fn test_process_fetch_local_html_formats_and_path_collisions() -> Result<(
 		markdown_output.stats.fetch.as_ref().ok_or("expected Fetch stats")?.failed,
 		2
 	);
+	assert!(!markdown_destination.join("page.md").exists());
 	assert!(
 		markdown_output
 			.items
@@ -1003,6 +1058,7 @@ async fn test_process_fetch_local_html_formats_and_path_collisions() -> Result<(
 
 	assert_eq!(raw_output.stats.fetch.as_ref().ok_or("expected Fetch stats")?.failed, 0);
 	assert!(raw_destination.join(".tmp-zmapr").join("01-fetch").join("page.html").is_file());
+	assert!(raw_destination.join("page.html").is_file());
 
 	assert_eq!(
 		slim_output.stats.fetch.as_ref().ok_or("expected Fetch stats")?.failed,

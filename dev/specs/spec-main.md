@@ -267,7 +267,7 @@ The versioned Map prompt (`PROMPT_VERSION` is currently 2) supplies a file path 
 The pipeline module is private. Internal types separate orchestration from public results:
 
 - `WorkflowContext` contains resolved paths, resume settings, concurrency limits, and progress state.
-- `ArtifactSet` identifies the current artifact root and ordered items.
+- `ArtifactSet` identifies the current artifact root and ordered items. It contains only artifacts produced or reused in the current run, and each item's `local_path` exists as a file when the pipeline returns. Failed items are omitted.
 - `ArtifactItem` stores source identity, relative path, local path, media type, and an optional hash.
 - `StageOutput` contains the next artifact set and item-level completed, skipped, and failed outcomes.
 
@@ -279,14 +279,17 @@ All generated state is rooted at the configured destination:
 
 ```text
 <destination>/
+├── <published artifact paths>
 ├── .tmp-zmapr/
 │   ├── 01-fetch/
 │   ├── 02-sanitize/
 │   ├── manifest.json
 │   ├── sanitize-manifest.json
 │   └── content-map.journal.jsonl
-└── content-map.json
+└── content-map.json (when Map is enabled)
 ```
+
+Final artifacts are copied to destination-relative paths. Intermediate artifacts remain under `.tmp-zmapr/`. Existing files at published paths are replaced, but unrelated and stale files are not removed. A publication failure is returned by `wait_output` and can leave a partial set of published files.
 
 Fetch and Sanitize write to separate locations so downstream failures can be retried without mutating source files or successful upstream work.
 
@@ -298,6 +301,7 @@ Request validation checks the workflow before stage execution:
 - `concurrency` is greater than zero.
 - Every enabled AI stage resolves to a nonempty model.
 - A local source exists and is a file or directory, or a web source is a structurally valid HTTP(S) URL.
+- A local directory Fetch source must not resolve to the existing destination directory.
 - A Sanitize prompt file exists, and inline prompt content is nonempty.
 - When Fetch is disabled and a downstream stage is enabled, a valid prior Fetch manifest and cache are required.
 
@@ -308,6 +312,8 @@ Durable publication uses deterministic serialization and atomic replacement wher
 ## Results
 
 `ProcessContentHandle::wait_output` returns the completed workflow data:
+
+The output's `content_root` is the configured destination directory containing the published final content, not the intermediate cache root.
 
 ```rust
 pub struct ProcessContentOutput {

@@ -12,12 +12,21 @@ The function returns a [`ProcessContentHandle`] after validation and workflow st
 
 Progress notifications are best-effort. The query handle provides access to live state even if notifications are dropped. Item-level failures can be reported in the final output when the workflow completes successfully.
 
+## Final content
+
+After all selected stages succeed, the workflow copies the final artifacts to paths relative to the configured destination. Intermediate Fetch and Sanitize artifacts remain under `.tmp-zmapr/`.
+
+Existing files at published artifact paths are replaced. Unrelated files and stale files from previous runs are not removed. The `.tmp-zmapr/...` paths and root `content-map.json` path are reserved and cannot be used as final artifact paths.
+
+Publication errors are returned by `ProcessContentHandle::wait_output`. A failure can leave some final artifacts published and others unpublished.
+
 ## Validation and errors
 
 Before starting the background workflow, the function validates that:
 
 - At least one stage is selected and `max_concurrency` is greater than zero.
 - A selected Fetch source is a valid local path or HTTP(S) URL.
+- A local directory Fetch source does not resolve to the existing destination directory.
 - Each selected AI stage resolves to a nonempty model.
 - A configured Sanitize prompt file exists, or inline prompt content is nonempty.
 - When Fetch is not selected but a downstream stage is, prior Fetch state is available. Its validity is checked when the workflow loads it.

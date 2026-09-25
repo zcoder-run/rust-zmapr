@@ -1,4 +1,5 @@
 use super::pipeline::{StageOutput, WorkflowContext, build_fetch_request, run_pipeline};
+use super::publish::publish_final_artifacts;
 use super::progress::{ProcessProgressPublisher, new_completion_channel, new_progress_channel};
 use super::response::{ProcessContentHandle, ProcessContentOutput};
 use super::state::{ProcessQuery, StageSelection, new_process_state};
@@ -71,11 +72,12 @@ fn process_content_output(
 	options: &ProcessContentOptions,
 	output: StageOutput,
 ) -> Result<ProcessContentOutput> {
+	let _ = publish_final_artifacts(&output.artifacts, &context.destination)?;
 	let (stats, items) = context.progress.finish()?;
 	Ok(ProcessContentOutput {
 		destination: context.destination.clone(),
 		manifest_path: context.manifest.is_file().then(|| context.manifest.clone()),
-		content_root: output.artifacts.root,
+		content_root: context.destination.clone(),
 		content_map_path: (options.map && context.content_map.is_file()).then(|| context.content_map.clone()),
 		items,
 		stats,
@@ -99,6 +101,19 @@ fn validate_request(options: &ProcessContentOptions, fetch_request: Option<&Fetc
 		match fetch {
 			FetchRequest::Local(local_request) => {
 				validate_source(&local_request.source)?;
+				if local_request.source.path.is_dir() && options.destination.as_std_path().exists() {
+					let source_path = std::fs::canonicalize(local_request.source.path.as_std_path()).map_err(|error| {
+						Error::InvalidConfiguration(format!("failed to resolve source directory: {error}"))
+					})?;
+					let destination_path = std::fs::canonicalize(options.destination.as_std_path()).map_err(|error| {
+						Error::InvalidConfiguration(format!("failed to resolve destination directory: {error}"))
+					})?;
+					if source_path == destination_path {
+						return Err(Error::InvalidConfiguration(
+							"source directory must not be the destination".into(),
+						));
+					}
+				}
 			}
 			FetchRequest::Web(web_request) => {
 				validate_web_source(&web_request.source)?;

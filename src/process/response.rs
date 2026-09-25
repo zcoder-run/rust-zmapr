@@ -23,7 +23,7 @@ pub struct ProcessContentOutput {
 	pub destination: SPath,
 	/// Durable workflow manifest when one was written.
 	pub manifest_path: Option<SPath>,
-	/// Latest content artifact root produced by the selected stages.
+	/// Destination root containing the published final content.
 	pub content_root: SPath,
 	/// Published `content-map.json` when mapping was selected.
 	pub content_map_path: Option<SPath>,

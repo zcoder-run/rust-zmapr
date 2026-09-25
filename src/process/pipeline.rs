@@ -26,6 +26,7 @@ pub(crate) struct WorkflowContext {
 	pub(crate) progress: ProcessProgressPublisher,
 }
 
+/// Artifacts produced or reused in the current run. Every item's `local_path` exists as a file when the pipeline returns.
 #[derive(Debug, Clone)]
 pub(crate) struct ArtifactSet {
 	pub(crate) root: SPath,

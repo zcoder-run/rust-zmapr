@@ -118,6 +118,9 @@ async fn test_process_content_map_with_stub_publishes_output_and_content_map() -
 	);
 	let fetch_root = destination.join(".tmp-zmapr").join("01-fetch");
 	assert_eq!(fs::read(fetch_root.join("intro.md"))?, b"# Introduction\nWelcome.");
+	assert_eq!(fs::read(destination.join("intro.md"))?, b"# Introduction\nWelcome.");
+	assert_eq!(fs::read(destination.join("code.rs"))?, b"pub fn run() {}\n");
+	assert_eq!(fs::read(destination.join("image.png"))?, b"PNG dummy image data");
 	assert!(fetch_root.join("image.png").is_file());
 	assert_eq!(fs::metadata(fetch_root.join("oversize.txt"))?.len(), 300_000);
 	assert_eq!(fs::read(source_root.join("intro.md"))?, b"# Introduction\nWelcome.");

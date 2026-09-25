@@ -10,7 +10,7 @@ Call `wait_output` to await completion. It consumes the workflow handle and retu
 
 ## Output
 
-[`ProcessContentOutput`] contains the destination directory, the latest content root, optional paths to the durable manifest and published content map, final item states, and validated final statistics. Optional paths are absent when the corresponding artifact was not written or published.
+[`ProcessContentOutput`] contains the destination directory, which is also `content_root` and contains the published final content, optional paths to the durable manifest and published content map, final item states, and validated final statistics. Optional paths are absent when the corresponding artifact was not written or published.
 
 ## Stages
 

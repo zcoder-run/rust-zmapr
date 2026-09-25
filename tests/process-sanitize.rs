@@ -126,6 +126,7 @@ async fn test_process_sanitize_map_uses_sanitized_artifacts() -> Result<()> {
 	let source_root = root.join("source");
 	fs::create_dir_all(&source_root)?;
 	fs::write(source_root.join("intro.md"), b"# Intro\nSanitize before mapping.")?;
+	fs::write(source_root.join("image.png"), b"image bytes")?;
 	let destination = root.join("destination");
 	let options = ProcessContentOptions::new(path_text(&destination))
 		.with_source(path_text(&source_root))
@@ -144,12 +145,18 @@ async fn test_process_sanitize_map_uses_sanitized_artifacts() -> Result<()> {
 	);
 	assert_eq!(
 		output.content_root.as_std_path(),
-		destination.join(".tmp-zmapr").join("02-sanitize").as_path()
+		destination.as_path()
 	);
+	assert_eq!(
+		fs::read(destination.join("intro.md"))?,
+		b"# Intro\nSanitize before mapping."
+	);
+	assert_eq!(fs::read(destination.join("image.png"))?, b"image bytes");
 	let content_map_path = output.content_map_path.as_ref().ok_or("expected content map")?;
 	let document: ContentMapDocument = serde_json::from_slice(&fs::read(content_map_path.as_std_path())?)?;
 	assert!(document.file_map.contains_key("intro.md"));
 	assert!(destination.join(".tmp-zmapr").join("02-sanitize").join("intro.md").is_file());
+	assert!(destination.join(".tmp-zmapr").join("02-sanitize").join("image.png").is_file());
 
 	set_active_ai_selector(None);
 	Ok(())
@@ -241,6 +248,7 @@ async fn test_process_sanitize_missing_output_tags_records_failure_and_completes
 		}
 	)));
 	assert!(!destination.join(".tmp-zmapr").join("02-sanitize").join("guide.md").exists());
+	assert!(!destination.join("guide.md").exists());
 
 	set_active_ai_selector(None);
 	Ok(())
