@@ -1,14 +1,54 @@
 # zmapr
 
-`zmapr` is a Rust library for mapping code and content into AI-oriented context.
+`zmapr` is a Rust library for turning local or web content into AI-oriented context. Its main entry point, [`process_content`], accepts [`ProcessContentOptions`] and starts an asynchronous workflow. The returned [`ProcessContentHandle`] lets callers observe progress and live state, then collect the final [`ProcessContentOutput`] with artifact paths, item states, and statistics.
 
-The public workflow runs the selected stages in fixed order: Fetch, Sanitize, then Map. A disabled stage passes artifacts through unchanged. When Fetch is disabled, downstream processing uses a valid prior Fetch cache.
+Configure local or web sources, Fetch formats and selection filters, web crawl depth, stage-specific models, and resume or concurrency behavior through the options API. The selected stages run in this fixed order:
+
+## Stages
+
+- **Fetch** retrieves content from a local path or an HTTP(S) source. It supports file selection, HTML conversion, and web crawling options such as maximum depth and `llms.txt` discovery.
+
+- **Sanitize** optionally applies AI-based sanitization to fetched content, using the configured model and either the built-in instructions or a custom prompt.
+
+- **Map** optionally analyzes the processed content with AI and creates a structured [`ContentMap`] with file and folder guidance.
+
+Stages can be combined or run individually. A disabled stage passes the current artifacts through unchanged. If Fetch is disabled while a later stage is enabled, the workflow uses a valid prior Fetch cache.
 
 ## Workflow
 
-Use [`process_content`] to start a processing workflow. Configure its behavior with [`ProcessContentOptions`]. Sources may be local or web content, represented by [`ContentSource`], and Fetch output can be configured with [`FetchFormat`].
+Use [`process_content`] to start the workflow. Sources are represented by [`ContentSource`], and [`FetchFormat`] configures how fetched HTML is stored. The workflow handle provides progress notifications, read-only access to live state, and the final output after processing completes.
 
 The returned [`ProcessContentHandle`] exposes progress through [`ProgressRx`], live state through [`ProcessQuery`], and final results through [`ProcessContentHandle::wait_output`]. Use [`ProcessStateSnapshot`] for a point-in-time view.
+
+## Example
+
+This example fetches local Rust source files and waits for the workflow output. Optional Sanitize and Map stages are disabled by default.
+
+```rust
+use zmapr::{ProcessContentOptions, process_content};
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+	let options = ProcessContentOptions::new("target/zmapr").with_source("src");
+	
+	let handle = process_content(options).await?;
+	
+	let output = handle.wait_output().await?;
+
+	println!("Fetched content into {}", output.content_root);
+	Ok(())
+}
+```
+
+To enable both AI stages, configure a model along with the source:
+
+```rust
+let options = ProcessContentOptions::new("target/zmapr")
+    .with_source("src")
+    .with_sanitize(true)
+    .with_map(true)
+    .with_model("gpt-6-luna");
+```
 
 ## Mapping
 
