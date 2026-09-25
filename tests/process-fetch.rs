@@ -123,6 +123,73 @@ async fn test_process_fetch_copies_directory_artifacts_and_publishes_manifest() 
 }
 
 #[tokio::test]
+async fn test_process_fetch_local_items_run_sequentially_with_configured_concurrency() -> Result<()> {
+	// -- Setup & Fixtures
+	let root = fixture_root("test_process_fetch_local_items_run_sequentially_with_configured_concurrency")?;
+	let source_root = root.join("source");
+	fs::create_dir_all(&source_root)?;
+	for name in ["a.txt", "b.txt", "c.txt", "d.txt"] {
+		fs::write(source_root.join(name), name.as_bytes())?;
+	}
+	let destination = root.join("destination");
+	let options = local_fetch_options(&source_root, &destination, false).with_max_concurrency(4);
+
+	// -- Exec
+	let mut handle = process_content(options).await?;
+	let mut progress_rx = handle.take_progress_rx().ok_or("Fetch should provide a progress receiver")?;
+	let progress_task = tokio::spawn(async move {
+		let mut updates = Vec::new();
+		while let Ok(update) = progress_rx.recv().await {
+			updates.push(update);
+		}
+		updates
+	});
+	let output = handle.wait_output().await?;
+	let progress_events = progress_task.await?;
+
+	// -- Check
+	let fetch_stats = output.stats.fetch.as_ref().ok_or("expected Fetch stats")?;
+	assert_eq!(fetch_stats.completed, 4);
+	assert_eq!(fetch_stats.failed, 0);
+	assert_eq!(output.items.len(), 4);
+	assert!(
+		output
+			.items
+			.iter()
+			.all(|item| item.fetch.as_ref().is_some_and(|state| state.status == ItemStatus::Completed))
+	);
+
+	let mut running_item = None;
+	let mut completed_count = 0;
+	for update in &progress_events {
+		if let ProgressEvent::ItemStatusChanged {
+			id,
+			stage: ProcessStage::Fetch,
+			status,
+			..
+		} = &update.event
+		{
+			match status {
+				ItemStatus::Running => {
+					assert!(running_item.is_none(), "a Fetch item started before the prior item completed");
+					running_item = Some(*id);
+				}
+				ItemStatus::Completed => {
+					assert_eq!(running_item.take(), Some(*id));
+					completed_count += 1;
+				}
+				_ => {}
+			}
+		}
+	}
+
+	assert!(running_item.is_none());
+	assert_eq!(completed_count, 4);
+
+	Ok(())
+}
+
+#[tokio::test]
 async fn test_process_fetch_local_excluded_count() -> Result<()> {
 	// -- Setup & Fixtures
 	let root = fixture_root("test_process_fetch_local_excluded_count")?;

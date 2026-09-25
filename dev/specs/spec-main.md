@@ -167,7 +167,7 @@ Defaults are:
 - `max_depth` is `0`.
 - `llms` is `true`.
 - `sanitize`, `map`, and `resume` are `false`.
-- `max_concurrency` is `8`.
+- `max_concurrency` is `8`; it bounds concurrent item work in web Fetch, Sanitize, and Map. Local Fetch is sequential and does not use it.
 - Optional model, source, and prompt fields are `None`.
 - `include` and `exclude` are empty.
 
@@ -222,7 +222,7 @@ pub fn select_active_ai_client(model: &str) -> Arc<dyn MaprAiClient>;
 
 ## Fetch
 
-Fetch runs when `source` is set. An `http://` or `https://` source is treated as a web URL; any other source is treated as a local path. Local files and recursively selected directory files are copied into `.tmp-zmapr/01-fetch/`. Symbolic links are skipped.
+Local files and recursively selected directory files are copied into `.tmp-zmapr/01-fetch/`. Symbolic links are skipped. Local Fetch discovers, reads, formats, and writes selected items sequentially, and does not use `max_concurrency`.
 
 Include patterns are applied before exclusions. Exclusions take precedence, and selected paths are sorted by stable relative path. Local and web sources use the same patterns.
 

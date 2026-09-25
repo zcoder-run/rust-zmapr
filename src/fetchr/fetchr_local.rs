@@ -13,8 +13,6 @@ use crate::process::{ItemId, LocalContentSource, ProcessStage};
 use crate::{Error, Result};
 use simple_fs::{SPath, ensure_dir, list_files};
 use std::path::Path;
-use std::sync::Arc;
-use tokio::sync::Semaphore;
 
 // region:    --- Public Functions
 
@@ -149,9 +147,6 @@ pub(crate) async fn execute_local_fetch(request: &LocalFetchRequest, context: &W
 		*stored_path_counts.entry(formatted.relative_path.clone()).or_default() += 1;
 	}
 
-	let semaphore = Arc::new(Semaphore::new(context.max_concurrency));
-	let mut materializations = Vec::with_capacity(prepared_items.len());
-
 	for (id, item, formatted) in prepared_items {
 		let artifact_hash = hash_bytes(&formatted.bytes);
 		if stored_path_counts.get(&formatted.relative_path).copied().unwrap_or_default() > 1 {
@@ -174,27 +169,9 @@ pub(crate) async fn execute_local_fetch(request: &LocalFetchRequest, context: &W
 		let relative_path = formatted.relative_path;
 		let media_type = formatted.media_type;
 		let artifact_path = artifact_root.join(relative_path.as_str());
-		let task_artifact_path = artifact_path.clone();
-		let task_bytes = formatted.bytes;
-		let permit = semaphore
-			.clone()
-			.acquire_owned()
-			.await
-			.map_err(|_| Error::MalformedState("Fetch materialization concurrency control closed".to_owned()))?;
 		context.progress.item_running(id, ProcessStage::Fetch);
-		let task = tokio::task::spawn_blocking(move || {
-			let _permit = permit;
-			write_fetch_artifact(&task_artifact_path, &task_bytes).map_err(|error| error.to_string())
-		});
-		materializations.push((id, item, relative_path, media_type, artifact_path, artifact_hash, task));
-	}
 
-	for (id, item, relative_path, media_type, artifact_path, artifact_hash, task) in materializations {
-		let item_result = task
-			.await
-			.map_err(|error| Error::MalformedState(format!("Fetch materialization task failed: {error}")))?;
-
-		match item_result {
+		match write_fetch_artifact(&artifact_path, &formatted.bytes) {
 			Ok(()) => {
 				context.progress.fetch_completed(id, &relative_path, artifact_path.clone());
 				let artifact = ArtifactItem {
@@ -215,7 +192,7 @@ pub(crate) async fn execute_local_fetch(request: &LocalFetchRequest, context: &W
 			}
 			Err(error) => {
 				has_failures = true;
-				context.progress.item_failed(id, ProcessStage::Fetch, error);
+				context.progress.item_failed(id, ProcessStage::Fetch, error.to_string());
 				manifest_items.push(manifest_item(&item, &relative_path, media_type, None, artifact_hash)?);
 			}
 		}
