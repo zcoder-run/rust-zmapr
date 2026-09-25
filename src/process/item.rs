@@ -1,43 +1,81 @@
+#![doc = include_str!("../../docs/rustdoc/process/item.md")]
+
 use super::response::ProcessStage;
 use simple_fs::SPath;
 
 // region:    --- Types
 
+/// Identifies an item registered in a process run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ItemId(usize);
 
+/// Lifecycle status of a processing stage for an item.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ItemStatus {
+	/// The stage has not started.
 	Pending,
+
+	/// The stage is currently running.
 	Running,
+
+	/// The stage completed successfully.
 	Completed,
+
+	/// The stage output was reused rather than produced again.
 	Reused,
+
+	/// The stage was skipped.
 	Skipped,
+
+	/// The stage failed.
 	Failed,
 }
 
+/// Recorded status and output details for one item stage.
 #[derive(Debug, Clone)]
 pub struct ItemStageState {
+	/// Current lifecycle status of the stage.
 	pub status: ItemStatus,
+
+	/// Path to the stage output, when one is available.
 	pub path: Option<SPath>,
+
+	/// Token usage reported for the stage, when available.
 	pub usage: Option<genai::chat::Usage>,
+
+	/// Error details when the stage failed.
 	pub error: Option<String>,
 }
 
+/// Identity, source information, and stage states for one process item.
 #[derive(Debug, Clone)]
 pub struct ItemState {
+	/// Identifier assigned to this item in the process run.
 	pub id: ItemId,
+
+	/// Source string supplied for this item.
 	pub source: String,
+
+	/// Original path associated with this item.
 	pub origin_path: String,
+
+	/// Path used to identify this item relative to its source root.
 	pub relative_path: String,
+
+	/// Fetch stage state, when recorded for this item.
 	pub fetch: Option<ItemStageState>,
+
+	/// Sanitize stage state, when recorded for this item.
 	pub sanitize: Option<ItemStageState>,
+
+	/// Map stage state, when recorded for this item.
 	pub map: Option<ItemStageState>,
 }
 
 // endregion: --- Types
 
 impl ItemId {
+	/// Returns the numeric index of this item in the process run.
 	pub fn index(&self) -> usize {
 		self.0
 	}
@@ -59,6 +97,7 @@ impl ItemStageState {
 }
 
 impl ItemState {
+	/// Returns the recorded state for `stage`, if one exists.
 	pub fn stage(&self, stage: ProcessStage) -> Option<&ItemStageState> {
 		match stage {
 			ProcessStage::Fetch => self.fetch.as_ref(),
@@ -75,6 +114,10 @@ impl ItemState {
 		}
 	}
 
+	/// Returns the Sanitize output path, falling back to the Fetch output path.
+	///
+	/// The selection is based on which paths are present, not on stage status.
+	/// Map output paths are not considered.
 	pub fn content_path(&self) -> Option<&SPath> {
 		self.sanitize
 			.as_ref()

@@ -1,3 +1,5 @@
+#![doc = include_str!("../../docs/rustdoc/mapr/mapr-prompt.md")]
+
 use crate::mapr::FileMapEntry;
 use crate::{Error, Result};
 use aho_corasick::AhoCorasick;
@@ -7,6 +9,7 @@ use std::sync::LazyLock;
 
 // region:    --- Constants
 
+/// Version of the embedded content-map prompt.
 pub const PROMPT_VERSION: u32 = 2;
 
 static PROMPT_TEMPLATE: &str = include_str!("content-map.tmpl");
@@ -60,6 +63,13 @@ struct RawFileInfo {
 
 // region:    --- Public Functions
 
+/// Renders the content-map prompt for a source file.
+///
+/// Replaces the `{{file_path}}` and `{{file_content}}` placeholders in the embedded template.
+///
+/// # Errors
+///
+/// Returns an error if the prompt template replacement engine could not be initialized.
 pub fn render_file_prompt(file_path: &str, file_content: &str) -> Result<String> {
 	let ac = PROMPT_AC
 		.as_ref()
@@ -68,6 +78,14 @@ pub fn render_file_prompt(file_path: &str, file_content: &str) -> Result<String>
 	Ok(ac.replace_all(PROMPT_TEMPLATE, &[file_path, file_content]))
 }
 
+/// Parses the first `<FILE_INFO>` block into a content-map entry.
+///
+/// Accepts JSON wrapped in Markdown fences and list fields as either arrays or comma-separated
+/// strings. Parsed topics are limited to seven entries of at most three words each.
+///
+/// # Errors
+///
+/// Returns an error if the response is missing a required tag or contains malformed JSON.
 pub fn parse_file_info(response: &str) -> Result<FileMapEntry> {
 	let start_tag = "<FILE_INFO>";
 	let end_tag = "</FILE_INFO>";

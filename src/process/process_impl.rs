@@ -6,6 +6,7 @@ use crate::fetchr::{FetchRequest, validate_source, validate_web_source};
 use crate::{ContentSource, Error, ProcessContentOptions, ProcessStage, Result, SanitizePrompt};
 use simple_fs::SPath;
 
+#[doc = include_str!("../../docs/rustdoc/process/process-content.md")]
 pub async fn process_content(options: ProcessContentOptions) -> Result<ProcessContentHandle> {
 	let fetch_request = build_fetch_request(&options);
 	let layout = validate_request(&options, fetch_request.as_ref())?;

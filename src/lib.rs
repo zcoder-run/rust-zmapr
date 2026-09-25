@@ -1,3 +1,5 @@
+#![doc = include_str!("../docs/rustdoc/lib.md")]
+
 // region:    --- Modules
 
 mod derive_aliases;

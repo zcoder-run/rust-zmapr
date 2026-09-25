@@ -1,3 +1,5 @@
+#![doc = include_str!("../../docs/rustdoc/process/response.md")]
+
 use super::item::ItemState;
 use super::progress::{ProcessCompletionRx, ProgressRx, event_base_error_to_error};
 use super::state::ProcessQuery;
@@ -15,6 +17,7 @@ pub struct ProcessContentHandle {
 }
 
 #[derive(Debug, Clone)]
+/// The successful result of a completed content-processing workflow.
 pub struct ProcessContentOutput {
 	/// Root directory containing generated workflow artifacts.
 	pub destination: SPath,
@@ -32,8 +35,13 @@ pub struct ProcessContentOutput {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProcessStage {
+	/// Retrieves source content into the workflow destination.
 	Fetch,
+
+	/// Sanitizes fetched content.
 	Sanitize,
+
+	/// Builds a content map from processed content.
 	Map,
 }
 

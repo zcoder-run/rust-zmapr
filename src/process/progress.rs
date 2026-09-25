@@ -1,3 +1,5 @@
+#![doc = include_str!("../../docs/rustdoc/process/progress.md")]
+
 use super::item::{ItemId, ItemStatus};
 use super::response::{ProcessContentOutput, ProcessStage};
 use super::state::ProcessStateStore;
@@ -11,44 +13,88 @@ use std::sync::Arc;
 // region:    --- Types
 
 #[derive(Debug, Clone)]
+/// A notification describing a workflow or stage progress event.
 pub enum ProgressEvent {
+	/// A selected stage has started.
 	StageStarted {
+		/// The stage that started.
 		stage: ProcessStage,
 	},
+
+	/// A stage has completed.
 	StageCompleted {
+		/// The stage that completed.
 		stage: ProcessStage,
 	},
+
+	/// A stage has failed.
 	StageFailed {
+		/// The stage that failed.
 		stage: ProcessStage,
+
+		/// The failure message.
 		message: String,
 	},
+
+	/// Items have been registered for a stage.
 	ItemsRegistered {
+		/// The stage receiving the items.
 		stage: ProcessStage,
+
+		/// The number of registered items.
 		count: usize,
 	},
+
+	/// Items have been excluded from a stage.
 	ItemsExcluded {
+		/// The stage from which items were excluded.
 		stage: ProcessStage,
+
+		/// The number of excluded items.
 		count: usize,
 	},
+
+	/// The total item count for a stage is known.
 	StageTotalKnown {
+		/// The stage whose total is known.
 		stage: ProcessStage,
+
+		/// The total number of items in the stage.
 		total_items: usize,
 	},
+
+	/// An item's status changed in a stage.
 	ItemStatusChanged {
+		/// The item whose status changed.
 		id: ItemId,
+
+		/// The stage where the status changed.
 		stage: ProcessStage,
+
+		/// The item's new status.
 		status: ItemStatus,
 	},
+
+	/// The workflow completed successfully.
 	WorkflowCompleted,
+
+	/// The workflow failed.
 	WorkflowFailed {
+		/// The failure message.
 		message: String,
 	},
 }
 
 #[derive(Debug, Clone)]
+/// A progress event and its associated workflow statistics snapshot.
 pub struct ProgressUpdate {
+	/// Sequence number assigned to this update.
 	pub seq: u64,
+
+	/// Event represented by this update.
 	pub event: ProgressEvent,
+
+	/// Workflow statistics snapshot associated with this update.
 	pub stats: ProgressStats,
 }
 

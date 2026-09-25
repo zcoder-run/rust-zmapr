@@ -1,3 +1,5 @@
+#![doc = include_str!("../../docs/rustdoc/process/state.md")]
+
 use super::item::{ItemId, ItemStageState, ItemState, ItemStatus};
 use super::progress::{ProgressEvent, ProgressUpdate};
 use super::response::ProcessStage;

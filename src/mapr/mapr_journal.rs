@@ -1,3 +1,5 @@
+#![doc = include_str!("../../docs/rustdoc/mapr/mapr-journal.md")]
+
 use crate::mapr::{FileMapEntry, FolderMapEntry, hash_file_bytes};
 use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
@@ -9,6 +11,7 @@ use std::sync::{Arc, Mutex};
 
 // region:    --- Constants
 
+/// Version number written in newly created journal headers.
 pub const CURRENT_JOURNAL_VERSION: u32 = 1;
 
 // endregion: --- Constants
@@ -17,57 +20,101 @@ pub const CURRENT_JOURNAL_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+/// Indicates whether a journal operation produced a reusable entry.
 pub enum JournalRecordStatus {
+	/// The operation succeeded and produced an entry.
 	Ok,
+
+	/// The operation failed, so any previous entry for the path is invalidated.
 	Failed,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// Identifies the model, prompt, and artifact root used for a journal.
 pub struct JournalHeader {
+	/// Journal format version.
 	pub journal_version: u32,
+
+	/// Model used to generate the mapped entries.
 	pub model: String,
+
+	/// Version of the prompt used to generate the mapped entries.
 	pub prompt_version: u32,
+
+	/// Root identifier for the mapped source artifacts.
 	pub artifact_root: String,
+
+	/// Fingerprint derived from the model, prompt version, and artifact root.
 	pub fingerprint: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// Journal record for the mapping result of one file.
 pub struct JournalFileRecord {
+	/// Source-relative path of the file.
 	pub path: String,
+
+	/// Hash of the source content used to generate the result.
 	pub source_hash: String,
+
+	/// Whether mapping succeeded or failed.
 	pub status: JournalRecordStatus,
+
+	/// Generated entry, present for successful records.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub entry: Option<FileMapEntry>,
+
+	/// Failure detail, present when available for failed records.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// Journal record for the mapping result of one folder.
 pub struct JournalFolderRecord {
+	/// Source-relative path of the folder.
 	pub path: String,
+
+	/// Hash representing the folder source used to generate the result.
 	pub source_hash: String,
+
+	/// Whether mapping succeeded or failed.
 	pub status: JournalRecordStatus,
+
+	/// Generated entry, present for successful records.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub entry: Option<FolderMapEntry>,
+
+	/// Failure detail, present when available for failed records.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
+/// A header or result record in the newline-delimited journal format.
 pub enum JournalRecord {
+	/// Journal identity and compatibility information.
 	Header(JournalHeader),
+
+	/// Mapping result for a source file.
 	File(JournalFileRecord),
+
+	/// Mapping result for a source folder.
 	Folder(JournalFolderRecord),
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+/// Successful file and folder entries recovered from a compatible journal.
 pub struct JournalReuseIndex {
 	file_entries: BTreeMap<String, (String, FileMapEntry)>,
 	folder_entries: BTreeMap<String, (String, FolderMapEntry)>,
 }
 
 #[derive(Clone)]
+/// Append-only writer for journal records.
+///
+/// Clones share the same file handle, and appends through that handle are serialized.
 pub struct JournalAppender {
 	path: PathBuf,
 	file: Arc<Mutex<std::fs::File>>,
@@ -77,11 +124,13 @@ pub struct JournalAppender {
 
 // region:    --- Public Functions
 
+/// Computes the journal fingerprint for a model, prompt version, and artifact root.
 pub fn compute_journal_fingerprint(model: &str, prompt_version: u32, artifact_root: &str) -> String {
 	let payload = format!("{model}:{prompt_version}:{artifact_root}");
 	hash_file_bytes(payload.as_bytes())
 }
 
+/// Removes a journal file if it exists.
 pub fn remove_journal(path: impl AsRef<Path>) -> Result<()> {
 	let path_ref = path.as_ref();
 	if path_ref.exists() {
@@ -92,6 +141,7 @@ pub fn remove_journal(path: impl AsRef<Path>) -> Result<()> {
 	Ok(())
 }
 
+/// Truncates an existing journal file without removing it.
 pub fn empty_journal(path: impl AsRef<Path>) -> Result<()> {
 	let path_ref = path.as_ref();
 	if path_ref.exists() {
@@ -101,6 +151,10 @@ pub fn empty_journal(path: impl AsRef<Path>) -> Result<()> {
 	Ok(())
 }
 
+/// Loads a compatible journal and opens its appender, creating a fresh journal when needed.
+///
+/// A malformed final record is discarded during recovery. A malformed record before the
+/// final line is reported as an invalid cache.
 pub fn init_or_load_journal(
 	path: impl AsRef<Path>,
 	expected_header: &JournalHeader,
@@ -127,6 +181,10 @@ pub fn init_or_load_journal(
 	}
 }
 
+/// Loads reusable entries when the journal matches the expected fingerprint and version.
+///
+/// Missing, empty, incompatible, or unusable journals return `Ok(None)`. A malformed final
+/// line is ignored, while malformed earlier lines return an invalid-cache error.
 pub fn load_journal(
 	path: impl AsRef<Path>,
 	expected_fingerprint: &str,
@@ -220,6 +278,7 @@ pub fn load_journal(
 // region:    --- Constructors & Inherent Implementations
 
 impl JournalHeader {
+	/// Creates a header and computes its compatibility fingerprint.
 	pub fn new(model: impl Into<String>, prompt_version: u32, artifact_root: impl Into<String>) -> Self {
 		let model = model.into();
 		let artifact_root = artifact_root.into();
@@ -235,6 +294,7 @@ impl JournalHeader {
 }
 
 impl JournalRecord {
+	/// Creates a header record with the supplied journal identity fields.
 	pub fn header(
 		journal_version: u32,
 		model: impl Into<String>,
@@ -251,6 +311,7 @@ impl JournalRecord {
 		})
 	}
 
+	/// Creates a successful file record.
 	pub fn file_ok(path: impl Into<String>, source_hash: impl Into<String>, entry: FileMapEntry) -> Self {
 		Self::File(JournalFileRecord {
 			path: path.into(),
@@ -261,6 +322,7 @@ impl JournalRecord {
 		})
 	}
 
+	/// Creates a failed file record.
 	pub fn file_failed(path: impl Into<String>, source_hash: impl Into<String>, error: impl Into<String>) -> Self {
 		Self::File(JournalFileRecord {
 			path: path.into(),
@@ -271,6 +333,7 @@ impl JournalRecord {
 		})
 	}
 
+	/// Creates a successful folder record.
 	pub fn folder_ok(path: impl Into<String>, source_hash: impl Into<String>, entry: FolderMapEntry) -> Self {
 		Self::Folder(JournalFolderRecord {
 			path: path.into(),
@@ -281,6 +344,7 @@ impl JournalRecord {
 		})
 	}
 
+	/// Creates a failed folder record.
 	pub fn folder_failed(path: impl Into<String>, source_hash: impl Into<String>, error: impl Into<String>) -> Self {
 		Self::Folder(JournalFolderRecord {
 			path: path.into(),
@@ -293,10 +357,12 @@ impl JournalRecord {
 }
 
 impl JournalReuseIndex {
+	/// Creates an empty reuse index.
 	pub fn new() -> Self {
 		Self::default()
 	}
 
+	/// Returns a cached file entry when both its path and source hash match.
 	pub fn get_file(&self, path: &str, current_hash: &str) -> Option<&FileMapEntry> {
 		if let Some((hash, entry)) = self.file_entries.get(path)
 			&& hash == current_hash
@@ -307,6 +373,7 @@ impl JournalReuseIndex {
 		}
 	}
 
+	/// Returns a cached folder entry when both its path and source hash match.
 	pub fn get_folder(&self, path: &str, current_hash: &str) -> Option<&FolderMapEntry> {
 		if let Some((hash, entry)) = self.folder_entries.get(path)
 			&& hash == current_hash
@@ -317,30 +384,39 @@ impl JournalReuseIndex {
 		}
 	}
 
+	/// Returns the number of successful file entries in the index.
 	pub fn file_count(&self) -> usize {
 		self.file_entries.len()
 	}
 
+	/// Returns the number of successful folder entries in the index.
 	pub fn folder_count(&self) -> usize {
 		self.folder_entries.len()
 	}
 
+	/// Inserts or replaces a successful file entry.
 	pub fn record_file_ok(&mut self, path: impl Into<String>, source_hash: impl Into<String>, entry: FileMapEntry) {
 		self.file_entries.insert(path.into(), (source_hash.into(), entry));
 	}
 
+	/// Removes any cached file entry for the path.
 	pub fn record_file_failed(&mut self, path: &str) {
 		self.file_entries.remove(path);
 	}
 
+	/// Inserts or replaces a successful folder entry.
 	pub fn record_folder_ok(&mut self, path: impl Into<String>, source_hash: impl Into<String>, entry: FolderMapEntry) {
 		self.folder_entries.insert(path.into(), (source_hash.into(), entry));
 	}
 
+	/// Removes any cached folder entry for the path.
 	pub fn record_folder_failed(&mut self, path: &str) {
 		self.folder_entries.remove(path);
 	}
 
+	/// Applies a file or folder record, invalidating its cached entry on failure.
+	///
+	/// Header records do not change the index.
 	pub fn apply_record(&mut self, record: &JournalRecord) {
 		match record {
 			JournalRecord::File(file_rec) => {
@@ -367,6 +443,7 @@ impl JournalReuseIndex {
 }
 
 impl JournalAppender {
+	/// Creates or truncates a journal, writes its header, and opens it for appending.
 	pub fn create_new(path: impl AsRef<Path>, header: &JournalHeader) -> Result<Self> {
 		let path_buf = path.as_ref().to_path_buf();
 		if let Some(parent) = path_buf.parent() {
@@ -387,6 +464,7 @@ impl JournalAppender {
 		})
 	}
 
+	/// Opens an existing journal for appending without validating its contents.
 	pub fn open_existing(path: impl AsRef<Path>) -> Result<Self> {
 		let path_buf = path.as_ref().to_path_buf();
 		let file = OpenOptions::new().append(true).open(&path_buf)?;
@@ -397,6 +475,7 @@ impl JournalAppender {
 		})
 	}
 
+	/// Serializes a record as one JSON line and appends it to the journal.
 	pub fn append(&self, record: &JournalRecord) -> Result<()> {
 		let line = serde_json::to_string(record)
 			.map_err(|err| Error::MalformedState(format!("failed to serialize journal record: {err}")))?;
@@ -409,6 +488,7 @@ impl JournalAppender {
 		Ok(())
 	}
 
+	/// Truncates the journal through this appender without writing a new header.
 	pub fn empty(&self) -> Result<()> {
 		let mut file = self
 			.file
@@ -420,6 +500,7 @@ impl JournalAppender {
 		Ok(())
 	}
 
+	/// Returns the path associated with this appender.
 	pub fn path(&self) -> &Path {
 		&self.path
 	}

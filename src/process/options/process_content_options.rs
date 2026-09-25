@@ -3,6 +3,7 @@ use simple_fs::SPath;
 
 // region:    --- Types
 
+#[doc = include_str!("../../../docs/rustdoc/process/options/process-content-options.md")]
 #[derive(Debug, Clone)]
 pub struct ProcessContentOptions {
 	/// Root directory for cache, stage outputs, manifests, and maps.
@@ -69,81 +70,97 @@ impl ProcessContentOptions {
 // region:    --- Chainable
 
 impl ProcessContentOptions {
+	/// Sets the local path or HTTP(S) URL fetched by the workflow.
 	pub fn with_source(mut self, source: impl Into<String>) -> Self {
 		self.source = Some(source.into());
 		self
 	}
 
+	/// Replaces the include patterns used to select source content.
 	pub fn with_include(mut self, include: impl IntoIterator<Item = impl Into<String>>) -> Self {
 		self.include = include.into_iter().map(Into::into).collect();
 		self
 	}
 
+	/// Adds one include pattern.
 	pub fn append_include(mut self, include: impl Into<String>) -> Self {
 		self.include.push(include.into());
 		self
 	}
 
+	/// Adds multiple include patterns.
 	pub fn append_includes(mut self, includes: impl IntoIterator<Item = impl Into<String>>) -> Self {
 		self.include.extend(includes.into_iter().map(Into::into));
 		self
 	}
 
+	/// Replaces the exclude patterns used to select source content.
 	pub fn with_exclude(mut self, exclude: impl IntoIterator<Item = impl Into<String>>) -> Self {
 		self.exclude = exclude.into_iter().map(Into::into).collect();
 		self
 	}
 
+	/// Adds one exclude pattern.
 	pub fn append_exclude(mut self, exclude: impl Into<String>) -> Self {
 		self.exclude.push(exclude.into());
 		self
 	}
 
+	/// Adds multiple exclude patterns.
 	pub fn append_excludes(mut self, excludes: impl IntoIterator<Item = impl Into<String>>) -> Self {
 		self.exclude.extend(excludes.into_iter().map(Into::into));
 		self
 	}
 
+	/// Sets the storage format used by Fetch.
 	pub fn with_format(mut self, format: FetchFormat) -> Self {
 		self.format = format;
 		self
 	}
 
+	/// Sets the maximum web crawl depth from the starting URL.
 	pub fn with_max_depth(mut self, max_depth: usize) -> Self {
 		self.max_depth = max_depth;
 		self
 	}
 
+	/// Enables or disables `llms.txt` discovery for web sources.
 	pub fn with_llms(mut self, llms: bool) -> Self {
 		self.llms = llms;
 		self
 	}
 
+	/// Enables or disables the Sanitize stage.
 	pub fn with_sanitize(mut self, sanitize: bool) -> Self {
 		self.sanitize = sanitize;
 		self
 	}
 
+	/// Enables or disables the Map stage.
 	pub fn with_map(mut self, map: bool) -> Self {
 		self.map = map;
 		self
 	}
 
+	/// Sets the fallback model for enabled AI stages.
 	pub fn with_model(mut self, model: impl Into<String>) -> Self {
 		self.model = Some(model.into());
 		self
 	}
 
+	/// Sets the model used by the Sanitize stage.
 	pub fn with_sanitize_model(mut self, model: impl Into<String>) -> Self {
 		self.sanitize_model = Some(model.into());
 		self
 	}
 
+	/// Sets the model used by the Map stage.
 	pub fn with_map_model(mut self, model: impl Into<String>) -> Self {
 		self.map_model = Some(model.into());
 		self
 	}
 
+	/// Sets custom instructions that replace the built-in Sanitize instructions.
 	pub fn with_sanitize_prompt(mut self, prompt: SanitizePrompt) -> Self {
 		self.sanitize_prompt = Some(prompt);
 		self
