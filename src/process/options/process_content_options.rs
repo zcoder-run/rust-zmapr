@@ -35,7 +35,7 @@ pub struct ProcessContentOptions {
 	/// Reuses successful unchanged stage work when possible.
 	pub resume: bool,
 	/// Limits parallel item processing within a stage.
-	pub max_concurrency: usize,
+	pub concurrency: usize,
 }
 
 // endregion: --- Types
@@ -60,7 +60,7 @@ impl ProcessContentOptions {
 			map_model: None,
 			sanitize_prompt: None,
 			resume: false,
-			max_concurrency: 8,
+			concurrency: 8,
 		}
 	}
 }
@@ -173,8 +173,8 @@ impl ProcessContentOptions {
 	}
 
 	/// Sets the maximum parallel item processing within a stage.
-	pub fn with_max_concurrency(mut self, max_concurrency: usize) -> Self {
-		self.max_concurrency = max_concurrency;
+	pub fn with_concurrency(mut self, concurrency: usize) -> Self {
+		self.concurrency = concurrency;
 		self
 	}
 }

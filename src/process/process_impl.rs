@@ -28,7 +28,7 @@ pub async fn process_content(options: ProcessContentOptions) -> Result<ProcessCo
 		manifest: layout.manifest,
 		journal: layout.journal,
 		content_map: layout.content_map,
-		max_concurrency: options.max_concurrency,
+		concurrency: options.concurrency,
 		resume: options.resume,
 		progress,
 	};
@@ -89,9 +89,9 @@ fn validate_request(options: &ProcessContentOptions, fetch_request: Option<&Fetc
 		));
 	}
 
-	if options.max_concurrency == 0 {
+	if options.concurrency == 0 {
 		return Err(Error::InvalidConfiguration(
-			"max_concurrency must be greater than zero".into(),
+			"concurrency must be greater than zero".into(),
 		));
 	}
 

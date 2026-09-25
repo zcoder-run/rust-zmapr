@@ -155,7 +155,7 @@ pub struct ProcessContentOptions {
     pub map_model: Option<String>,
     pub sanitize_prompt: Option<SanitizePrompt>,
     pub resume: bool,
-    pub max_concurrency: usize,
+    pub concurrency: usize,
 }
 ```
 
@@ -167,7 +167,7 @@ Defaults are:
 - `max_depth` is `0`.
 - `llms` is `true`.
 - `sanitize`, `map`, and `resume` are `false`.
-- `max_concurrency` is `8`; it bounds concurrent item work in web Fetch, Sanitize, and Map. Local Fetch is sequential and does not use it.
+- `concurrency` is `8`; it bounds concurrent item work in web Fetch, Sanitize, and Map. Local Fetch is sequential and does not use it.
 - Optional model, source, and prompt fields are `None`.
 - `include` and `exclude` are empty.
 
@@ -175,7 +175,7 @@ Builder methods are grouped by purpose:
 
 - Fetch: `with_source`, `with_include`, `append_include`, `append_includes`, `with_exclude`, `append_exclude`, `append_excludes`, `with_format`, `with_max_depth`, and `with_llms`.
 - AI stages: `with_sanitize`, `with_map`, `with_model`, `with_sanitize_model`, `with_map_model`, and `with_sanitize_prompt`.
-- Workflow: `with_resume` and `with_max_concurrency`.
+- Workflow: `with_resume` and `with_concurrency`.
 
 `FetchFormat` has `Raw`, `Slim`, and `Md` variants. `Md` is the default. `SanitizePrompt` has `FilePath(SPath)` and `Content(String)` variants, with `SanitizePrompt::file` and `SanitizePrompt::content` constructors.
 
@@ -250,9 +250,13 @@ Per-item model usage is attached to the successful `ItemStageState` and aggregat
 
 When `resume` is enabled, Sanitize reuses an output only if the manifest's model and instruction hash match, the input hash is unchanged, and the output still matches its recorded hash. The version 1 manifest is stored at `.tmp-zmapr/sanitize-manifest.json`.
 
+Pending items are processed with bounded scheduling: at most `concurrency` tasks are spawned at once, and a new task is spawned as each one finishes.
+
 ## Map
 
 Map analyzes the artifacts from the preceding stage directly. It does not create a prepared copy or transform the artifacts. Map keys are the upstream relative paths, such as `index.md`, and Map is terminal: it does not replace the current content artifacts.
+
+Pending items are processed with bounded scheduling: at most `concurrency` tasks are spawned at once, and a new task is spawned as each one finishes.
 
 Map writes `<destination>/content-map.json`. The version 1 JSON document contains a provenance header, `file_map`, `folder_map`, and `file_metadata`. The internal per-file size limit is 200,000 bytes. The journal is version 1 NDJSON at `.tmp-zmapr/content-map.journal.jsonl`; it has a header followed by file or folder success and failure records, though current Map execution records files only. Appended lines are flushed. Its fingerprint includes the model, prompt version, and input artifact root. With `resume` enabled, file entries are reused when the journal header matches and the input path and hash match. Incompatible journal headers are invalidated. With resume disabled, entries are not reused; a failure-free run clears the journal after publishing the map, while item failures leave records retained. Per-item Map tasks currently ignore journal append errors, so those errors are not surfaced as Map item failures.
 
@@ -291,7 +295,7 @@ Fetch and Sanitize write to separate locations so downstream failures can be ret
 Request validation checks the workflow before stage execution:
 
 - At least one of Fetch, Sanitize, or Map is enabled.
-- `max_concurrency` is greater than zero.
+- `concurrency` is greater than zero.
 - Every enabled AI stage resolves to a nonempty model.
 - A local source exists and is a file or directory, or a web source is a structurally valid HTTP(S) URL.
 - A Sanitize prompt file exists, and inline prompt content is nonempty.

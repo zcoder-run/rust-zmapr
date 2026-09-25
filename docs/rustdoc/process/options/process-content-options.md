@@ -19,7 +19,7 @@ ProcessContentOptions::new("target/zmapr-docs")
 - `llms` is `true`, enabling `llms.txt` discovery for web sources.
 - `sanitize`, `map`, and `resume` are `false`.
 - `model`, `sanitize_model`, `map_model`, and `sanitize_prompt` are `None`.
-- `max_concurrency` is `8`.
+- `concurrency` is `8`.
 
 ## Fetch selection
 
@@ -37,7 +37,7 @@ A custom `sanitize_prompt` replaces the built-in Sanitize instructions. Inline p
 
 When `resume` is enabled, successful unchanged work may be reused when the stage's saved state and inputs remain compatible. Reuse rules depend on the stage.
 
-`max_concurrency` limits parallel item processing for web Fetch, Sanitize, and Map. Local Fetch processes items sequentially and does not use this limit.
+`concurrency` limits parallel item processing for web Fetch, Sanitize, and Map. Local Fetch processes items sequentially and does not use this limit.
 
 ## Configuration validation
 

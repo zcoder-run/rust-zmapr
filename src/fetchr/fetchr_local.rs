@@ -67,9 +67,9 @@ pub(crate) fn discover_local(request: &LocalFetchRequest) -> Result<LocalFetchDi
 }
 
 pub(crate) async fn execute_local_fetch(request: &LocalFetchRequest, context: &WorkflowContext) -> Result<StageOutput> {
-	if context.max_concurrency == 0 {
+	if context.concurrency == 0 {
 		return Err(Error::InvalidConfiguration(
-			"max_concurrency must be greater than zero".to_owned(),
+			"concurrency must be greater than zero".to_owned(),
 		));
 	}
 

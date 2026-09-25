@@ -8,6 +8,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 		.with_sanitize(true)
 		.with_map(true)
 		.with_max_depth(1)
+		.with_concurrency(12) // default 8
 		.with_model("gpt-6-luna");
 
 	// -- Run processing

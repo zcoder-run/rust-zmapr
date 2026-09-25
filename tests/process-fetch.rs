@@ -132,7 +132,7 @@ async fn test_process_fetch_local_items_run_sequentially_with_configured_concurr
 		fs::write(source_root.join(name), name.as_bytes())?;
 	}
 	let destination = root.join("destination");
-	let options = local_fetch_options(&source_root, &destination, false).with_max_concurrency(4);
+	let options = local_fetch_options(&source_root, &destination, false).with_concurrency(4);
 
 	// -- Exec
 	let mut handle = process_content(options).await?;

@@ -21,7 +21,7 @@ pub(crate) struct WorkflowContext {
 	pub(crate) manifest: SPath,
 	pub(crate) journal: SPath,
 	pub(crate) content_map: SPath,
-	pub(crate) max_concurrency: usize,
+	pub(crate) concurrency: usize,
 	pub(crate) resume: bool,
 	pub(crate) progress: ProcessProgressPublisher,
 }

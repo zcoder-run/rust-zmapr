@@ -1,7 +1,10 @@
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::{
+	Arc,
+	atomic::{AtomicUsize, Ordering},
+};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use zmapr::{
 	ContentMapDocument, ItemState, ItemStatus, MaprAiClient, MaprAiResponse, MaprAiSelector, ProcessContentOptions,
 	ProcessStage, ProgressEvent, SanitizePrompt, StageStatus, process_content, set_active_ai_selector,
@@ -345,6 +348,44 @@ async fn test_process_sanitize_resume_reuses_unchanged_items_and_invalidates_cha
 }
 
 #[tokio::test]
+async fn test_process_sanitize_respects_concurrency_limit() -> Result<()> {
+	let _guard = TEST_MUTEX.lock().await;
+	let current = Arc::new(AtomicUsize::new(0));
+	let peak = Arc::new(AtomicUsize::new(0));
+	set_active_ai_selector(Some(MaprAiSelector::Custom(Arc::new(ConcurrencyTrackingAiClient {
+		current: Arc::clone(&current),
+		peak: Arc::clone(&peak),
+	}))));
+
+	// -- Setup & Fixtures
+	let root = fixture_root("test_process_sanitize_respects_concurrency_limit")?;
+	let source_root = root.join("source");
+	fs::create_dir_all(&source_root)?;
+	for index in 0..6 {
+		fs::write(source_root.join(format!("item-{index}.md")), b"Content to sanitize.")?;
+	}
+	let destination = root.join("destination");
+	let options = ProcessContentOptions::new(path_text(&destination))
+		.with_source(path_text(&source_root))
+		.with_sanitize(true)
+		.with_model("custom-model")
+		.with_concurrency(2);
+
+	// -- Exec
+	let handle = process_content(options).await?;
+	let output = handle.wait_output().await?;
+
+	// -- Check
+	let stats = output.stats.sanitize.as_ref().ok_or("expected Sanitize stats")?;
+	assert_eq!(stats.completed, 6);
+	assert_eq!(stats.failed, 0);
+	assert_eq!(peak.load(Ordering::SeqCst), 2);
+
+	set_active_ai_selector(None);
+	Ok(())
+}
+
+#[tokio::test]
 async fn test_process_sanitize_task_panic_returns_task_join_error() -> Result<()> {
 	let _guard = TEST_MUTEX.lock().await;
 	set_active_ai_selector(Some(MaprAiSelector::Custom(Arc::new(PanickingSanitizeAiClient))));
@@ -372,6 +413,29 @@ async fn test_process_sanitize_task_panic_returns_task_join_error() -> Result<()
 }
 
 // region:    --- Support
+
+#[derive(Debug)]
+struct ConcurrencyTrackingAiClient {
+	current: Arc<AtomicUsize>,
+	peak: Arc<AtomicUsize>,
+}
+
+impl MaprAiClient for ConcurrencyTrackingAiClient {
+	fn complete<'a>(&'a self, _prompt: &'a str) -> zmapr::BoxFuture<'a, zmapr::Result<MaprAiResponse>> {
+		let current = Arc::clone(&self.current);
+		let peak = Arc::clone(&self.peak);
+
+		Box::pin(async move {
+			let active = current.fetch_add(1, Ordering::SeqCst) + 1;
+			let _ = peak.fetch_max(active, Ordering::SeqCst);
+			tokio::time::sleep(Duration::from_millis(30)).await;
+			let _ = current.fetch_sub(1, Ordering::SeqCst);
+			Ok(MaprAiResponse::new(
+				"<SANITIZED_CONTENT>\nok\n</SANITIZED_CONTENT>",
+			))
+		})
+	}
+}
 
 #[derive(Debug)]
 struct PanickingSanitizeAiClient;

@@ -5,11 +5,10 @@ use crate::mapr::{
 };
 use crate::process::pipeline::{ArtifactItem, ArtifactSet, StageOutput, WorkflowContext};
 use crate::process::{ItemId, ProcessStage};
-use crate::support::hash_bytes;
+use crate::support::{hash_bytes, run_bounded};
 use crate::{Error, Result};
 use std::collections::BTreeMap;
 use std::path::Path;
-use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 // region:    --- Types
@@ -118,26 +117,14 @@ pub(crate) async fn execute_content_map(
 	.with_file_metadata(file_metadata.clone());
 	publish_content_map(context.content_map.as_std_path(), &partial_document)?;
 
-	let semaphore = Arc::new(tokio::sync::Semaphore::new(context.max_concurrency.max(1)));
 	let ai_client = select_active_ai_client(&options.model);
-	let mut join_set = tokio::task::JoinSet::new();
-
-	for (item, id, relative_path, source_hash, content) in pending_items {
-		let sem = semaphore.clone();
+	let tasks = pending_items
+		.into_iter()
+		.map(|(item, id, relative_path, source_hash, content)| {
 		let client = ai_client.clone();
 		let appender = appender.clone();
 		let progress = context.progress.clone();
-		let content_map_path = context.content_map.clone();
-
-		join_set.spawn(async move {
-			let _permit = match sem.acquire_owned().await {
-				Ok(permit) => permit,
-				Err(error) => {
-					let message = format!("failed to acquire Map processing permit: {error}");
-					progress.item_failed(id, ProcessStage::Map, message.clone());
-					return None;
-				}
-			};
+			async move {
 			progress.item_running(id, ProcessStage::Map);
 
 			let prompt = match render_file_prompt(&item.relative_path, &content) {
@@ -169,11 +156,11 @@ pub(crate) async fn execute_content_map(
 					None
 				}
 			}
+			}
 		});
-	}
-
-	while let Some(res) = join_set.join_next().await {
-		match res.map_err(|error| Error::TaskJoin(format!("Map task failed: {error}")))? {
+	let results = run_bounded(tasks, context.concurrency, "Map").await?;
+	for result in results {
+		match result {
 			Some((rel_path, entry)) => {
 				file_map.insert(rel_path, entry);
 			}

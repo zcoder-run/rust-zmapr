@@ -2,7 +2,7 @@ use super::sanitizr_prompt::{parse_sanitized_content, render_sanitize_prompt, re
 use crate::mapr::{is_text_mappable, select_active_ai_client};
 use crate::process::pipeline::{ArtifactItem, ArtifactSet, StageOutput, WorkflowContext};
 use crate::process::{ItemId, ProcessStage, SanitizePrompt};
-use crate::support::hash_bytes;
+use crate::support::{hash_bytes, run_bounded};
 use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
 use simple_fs::SPath;
@@ -127,74 +127,61 @@ pub(crate) async fn execute_sanitize(
 		}
 	}
 
-	let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(context.max_concurrency.max(1)));
 	let ai_client = select_active_ai_client(&config.model);
-	let mut join_set = tokio::task::JoinSet::new();
+	let tasks = pending_items
+		.into_iter()
+		.map(|(item, id, content, input_hash)| {
+			let ai_client = ai_client.clone();
+			let progress = context.progress.clone();
+			let output_root = context.sanitize_output.clone();
+			let instructions = instructions.clone();
 
-	for (item, id, content, input_hash) in pending_items {
-		let semaphore = semaphore.clone();
-		let ai_client = ai_client.clone();
-		let progress = context.progress.clone();
-		let output_root = context.sanitize_output.clone();
-		let instructions = instructions.clone();
+			async move {
+				progress.item_running(id, ProcessStage::Sanitize);
 
-		join_set.spawn(async move {
-			let _permit = match semaphore.acquire_owned().await {
-				Ok(permit) => permit,
-				Err(error) => {
-					let message = format!("failed to acquire Sanitize processing permit: {error}");
-					progress.item_failed(id, ProcessStage::Sanitize, message.clone());
-					return Err(message);
+				let prompt = render_sanitize_prompt(&instructions, &item.relative_path, &content);
+				let output_path = output_root.join(item.relative_path.as_str());
+				let result: std::result::Result<(Vec<u8>, Option<genai::chat::Usage>), String> = async {
+					let response = ai_client.complete(&prompt).await.map_err(|error| error.to_string())?;
+					let sanitized_content =
+						parse_sanitized_content(&response.content).map_err(|error| error.to_string())?;
+					let output_bytes = sanitized_content.into_bytes();
+					write_sanitize_artifact(&output_path, &output_bytes).map_err(|error| error.to_string())?;
+					Ok((output_bytes, response.usage))
 				}
-			};
-			progress.item_running(id, ProcessStage::Sanitize);
+				.await;
 
-			let prompt = render_sanitize_prompt(&instructions, &item.relative_path, &content);
-			let output_path = output_root.join(item.relative_path.as_str());
-			let result: std::result::Result<(Vec<u8>, Option<genai::chat::Usage>), String> = async {
-				let response = ai_client.complete(&prompt).await.map_err(|error| error.to_string())?;
-				let sanitized_content =
-					parse_sanitized_content(&response.content).map_err(|error| error.to_string())?;
-				let output_bytes = sanitized_content.into_bytes();
-				write_sanitize_artifact(&output_path, &output_bytes).map_err(|error| error.to_string())?;
-				Ok((output_bytes, response.usage))
-			}
-			.await;
-
-			match result {
-				Ok((output_bytes, usage)) => {
-					let output_hash = hash_bytes(&output_bytes);
-					progress.item_completed(id, ProcessStage::Sanitize, Some(output_path.clone()), usage.clone());
-					Ok((
-						ArtifactItem {
-							source: item.source,
-							relative_path: item.relative_path.clone(),
-							local_path: output_path,
-							media_type: item.media_type,
-							source_hash: Some(output_hash.clone()),
-						},
-						SanitizeManifestItem {
-							relative_path: item.relative_path.clone(),
-							input_hash,
-							output_hash,
-						},
-					))
-				}
-				Err(message) => {
-					progress.item_failed(id, ProcessStage::Sanitize, message.clone());
-					Err(message)
+				match result {
+					Ok((output_bytes, usage)) => {
+						let output_hash = hash_bytes(&output_bytes);
+						progress.item_completed(id, ProcessStage::Sanitize, Some(output_path.clone()), usage.clone());
+						Ok((
+							ArtifactItem {
+								source: item.source,
+								relative_path: item.relative_path.clone(),
+								local_path: output_path,
+								media_type: item.media_type,
+								source_hash: Some(output_hash.clone()),
+							},
+							SanitizeManifestItem {
+								relative_path: item.relative_path.clone(),
+								input_hash,
+								output_hash,
+							},
+						))
+					}
+					Err(message) => {
+						progress.item_failed(id, ProcessStage::Sanitize, message.clone());
+						Err(message)
+					}
 				}
 			}
 		});
-	}
 
-	while let Some(result) = join_set.join_next().await {
-		if let Ok((artifact, manifest_item)) =
-			result.map_err(|error| Error::TaskJoin(format!("Sanitize task failed: {error}")))?
-		{
-			artifacts.push(artifact);
-			manifest_items.push(manifest_item);
-		}
+	let results = run_bounded(tasks, context.concurrency, "Sanitize").await?;
+	for (artifact, manifest_item) in results.into_iter().flatten() {
+		artifacts.push(artifact);
+		manifest_items.push(manifest_item);
 	}
 
 	artifacts.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));

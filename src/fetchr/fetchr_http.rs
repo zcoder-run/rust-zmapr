@@ -18,9 +18,9 @@ use tokio::sync::Semaphore;
 // region:    --- Execution
 
 pub(crate) async fn execute_http_fetch(request: &WebFetchRequest, context: &WorkflowContext) -> Result<StageOutput> {
-	if context.max_concurrency == 0 {
+	if context.concurrency == 0 {
 		return Err(Error::InvalidConfiguration(
-			"max_concurrency must be greater than zero".to_owned(),
+			"concurrency must be greater than zero".to_owned(),
 		));
 	}
 
@@ -39,7 +39,7 @@ pub(crate) async fn execute_http_fetch(request: &WebFetchRequest, context: &Work
 	ensure_dir(&artifact_root)?;
 
 	let client = new_client(None)?;
-	let semaphore = Arc::new(Semaphore::new(context.max_concurrency));
+	let semaphore = Arc::new(Semaphore::new(context.concurrency));
 
 	if request.options.llms_enabled()
 		&& let Some(probe) = probe_llms_txt(&client, &base_folder_url).await
@@ -1122,7 +1122,7 @@ https://docs.typesafe.ai/doc/page2.md#anchor
 			manifest: manifest.clone(),
 			journal: dest.join(".tmp-zmapr/content-map.journal.jsonl"),
 			content_map: dest.join("content-map.json"),
-			max_concurrency: 2,
+			concurrency: 2,
 			resume: false,
 			progress,
 		};

@@ -21,7 +21,7 @@ fn test_process_options_defaults() -> Result<()> {
 	assert_eq!(options.map_model, None);
 	assert!(options.sanitize_prompt.is_none());
 	assert!(!options.resume);
-	assert_eq!(options.max_concurrency, 8);
+	assert_eq!(options.concurrency, 8);
 
 	Ok(())
 }
@@ -47,7 +47,7 @@ fn test_process_options_flat_chainable_configuration() -> Result<()> {
 		.with_map_model("map-model")
 		.with_sanitize_prompt(SanitizePrompt::content("Custom instructions"))
 		.with_resume(true)
-		.with_max_concurrency(3);
+		.with_concurrency(3);
 
 	// -- Check
 	assert_eq!(options.source.as_deref(), Some("docs"));
@@ -61,7 +61,7 @@ fn test_process_options_flat_chainable_configuration() -> Result<()> {
 	assert_eq!(options.sanitize_model.as_deref(), Some("sanitize-model"));
 	assert_eq!(options.map_model.as_deref(), Some("map-model"));
 	assert!(options.resume);
-	assert_eq!(options.max_concurrency, 3);
+	assert_eq!(options.concurrency, 3);
 
 	Ok(())
 }
@@ -98,7 +98,7 @@ async fn test_process_options_validation_zero_concurrency() -> Result<()> {
 	// -- Setup & Fixtures
 	let options = ProcessContentOptions::new("tests-data/.tmp/zero-concurrency")
 		.with_map(true)
-		.with_max_concurrency(0);
+		.with_concurrency(0);
 
 	// -- Exec
 	let err = zmapr::process_content(options).await.err().ok_or("Expected validation error")?;
