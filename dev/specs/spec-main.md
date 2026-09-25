@@ -258,7 +258,7 @@ Map analyzes the artifacts from the preceding stage directly. It does not create
 
 Pending items are processed with bounded scheduling: at most `concurrency` tasks are spawned at once, and a new task is spawned as each one finishes.
 
-Map writes `<destination>/content-map.json`. The version 1 JSON document contains a provenance header, `file_map`, `folder_map`, and `file_metadata`. The internal per-file size limit is 200,000 bytes. The journal is version 1 NDJSON at `.tmp-zmapr/content-map.journal.jsonl`; it has a header followed by file or folder success and failure records, though current Map execution records files only. Appended lines are flushed. Its fingerprint includes the model, prompt version, and input artifact root. With `resume` enabled, file entries are reused when the journal header matches and the input path and hash match. Incompatible journal headers are invalidated. With resume disabled, entries are not reused; a failure-free run clears the journal after publishing the map, while item failures leave records retained. Per-item Map tasks currently ignore journal append errors, so those errors are not surfaced as Map item failures.
+Map writes `<destination>/_content-map.json`. The version 1 JSON document contains a provenance header, `file_map`, `folder_map`, and `file_metadata`. The internal per-file size limit is 200,000 bytes. The journal is version 1 NDJSON at `.tmp-zmapr/content-map.journal.jsonl`; it has a header followed by file or folder success and failure records, though current Map execution records files only. Appended lines are flushed. Its fingerprint includes the model, prompt version, and input artifact root. With `resume` enabled, file entries are reused when the journal header matches and the input path and hash match. Incompatible journal headers are invalidated. With resume disabled, entries are not reused; a failure-free run clears the journal after publishing the map, while item failures leave records retained. Per-item Map tasks currently ignore journal append errors, so those errors are not surfaced as Map item failures.
 
 The versioned Map prompt (`PROMPT_VERSION` is currently 2) supplies a file path and content and requires a `<FILE_INFO>` block containing JSON fields for `summary`, `when_to_use`, `public_types`, `public_functions`, and `topics`. The list fields accept arrays or comma-separated strings. Missing fields default to empty values, and Markdown fences around the JSON are accepted. Topic normalization retains at most seven nonempty topics and truncates each to three words. Missing tags and malformed JSON become `MissingTag` and `MalformedResponse` item failures.
 
@@ -286,7 +286,7 @@ All generated state is rooted at the configured destination:
 │   ├── manifest.json
 │   ├── sanitize-manifest.json
 │   └── content-map.journal.jsonl
-└── content-map.json (when Map is enabled)
+└── _content-map.json (when Map is enabled)
 ```
 
 Final artifacts are copied to destination-relative paths. Intermediate artifacts remain under `.tmp-zmapr/`. Existing files at published paths are replaced, but unrelated and stale files are not removed. A publication failure is returned by `wait_output` and can leave a partial set of published files.
@@ -473,7 +473,7 @@ pub struct FileMapMetadata {
 }
 ```
 
-The serialized `content-map.json` contains a provenance header alongside `file_map`, `folder_map`, and `file_metadata`. File map and metadata keys are upstream artifact-relative paths. Metadata records the source modification time, when available, and the hash of the mapped artifact. `folder_map` is currently emitted as an empty map. The only published map is `<destination>/content-map.json`.
+The serialized `_content-map.json` contains a provenance header alongside `file_map`, `folder_map`, and `file_metadata`. File map and metadata keys are upstream artifact-relative paths. Metadata records the source modification time, when available, and the hash of the mapped artifact. `folder_map` is currently emitted as an empty map. The only published map is `<destination>/_content-map.json`.
 
 ## Errors
 

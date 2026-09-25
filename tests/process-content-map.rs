@@ -135,7 +135,7 @@ async fn test_process_content_map_with_stub_publishes_output_and_content_map() -
 	assert!(content_map_path.is_file());
 	assert_eq!(
 		content_map_path.as_std_path(),
-		destination.join("content-map.json").as_path()
+		destination.join("_content-map.json").as_path()
 	);
 
 	let content_str = fs::read_to_string(content_map_path.as_std_path())?;
@@ -388,12 +388,12 @@ async fn test_process_content_map_publishes_recovered_entries_before_ai_work() -
 		Default::default(),
 	);
 	fs::write(
-		destination.join("content-map.json"),
+		destination.join("_content-map.json"),
 		serde_json::to_vec(&empty_document)?,
 	)?;
 
 	set_active_ai_selector(Some(MaprAiSelector::Custom(Arc::new(PartialMapCheckingAiClient {
-		content_map_path: destination.join("content-map.json"),
+		content_map_path: destination.join("_content-map.json"),
 	}))));
 
 	// -- Exec: the AI client checks that journal recovery was published first

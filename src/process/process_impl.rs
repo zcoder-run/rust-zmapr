@@ -205,7 +205,7 @@ fn resolve_layout(options: &ProcessContentOptions) -> WorkflowLayout {
 		sanitize_manifest: metadata_root.join("sanitize-manifest.json"),
 		manifest: metadata_root.join("manifest.json"),
 		journal: metadata_root.join("content-map.journal.jsonl"),
-		content_map: options.destination.join("content-map.json"),
+		content_map: options.destination.join("_content-map.json"),
 	}
 }
 
