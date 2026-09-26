@@ -1,12 +1,12 @@
 // region:    --- Modules
 
 mod jsonl;
-mod time;
 mod tasks;
+mod time;
 
 pub(crate) use jsonl::*;
-pub(crate) use time::*;
 pub(crate) use tasks::*;
+pub(crate) use time::*;
 
 // endregion: --- Modules
 

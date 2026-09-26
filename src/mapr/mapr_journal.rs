@@ -4,8 +4,8 @@ use crate::mapr::{FileMapEntry, FolderMapEntry, hash_file_bytes};
 use crate::support::{JsonlAppender, read_jsonl, truncate_to};
 use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
-use std::fs::OpenOptions;
 use std::collections::BTreeMap;
+use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
 
 // region:    --- Constants

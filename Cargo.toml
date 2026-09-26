@@ -1,6 +1,6 @@
 [package]
 name = "zmapr"
-version = "0.0.2"
+version = "0.0.3-WIP"
 description = "Code and content mapper for AI-optimized context."
 edition = "2024"
 license = "MIT OR Apache-2.0"
@@ -8,7 +8,6 @@ keywords = ["coding-harness","coding-ai"]
 authors = ["Jeremy Chone"]
 homepage = "https://github.com/zcoder-run/rust-zmapr"
 repository = "https://github.com/zcoder-run/rust-zmapr"
-
 
 [lib]
 doctest = false

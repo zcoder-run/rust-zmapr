@@ -186,10 +186,7 @@ impl ProcessProgressPublisher {
 	}
 
 	pub(crate) fn journal_errors(&self) -> Vec<String> {
-		self.journal_errors
-			.lock()
-			.unwrap_or_else(|error| error.into_inner())
-			.clone()
+		self.journal_errors.lock().unwrap_or_else(|error| error.into_inner()).clone()
 	}
 
 	pub(crate) fn finish(&self) -> Result<(FinalStats, Vec<super::item::ItemState>)> {

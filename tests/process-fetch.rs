@@ -177,7 +177,10 @@ async fn test_process_fetch_local_items_run_sequentially_with_configured_concurr
 		{
 			match status {
 				ItemStatus::Running => {
-					assert!(running_item.is_none(), "a Fetch item started before the prior item completed");
+					assert!(
+						running_item.is_none(),
+						"a Fetch item started before the prior item completed"
+					);
 					running_item = Some(*id);
 				}
 				ItemStatus::Completed => {

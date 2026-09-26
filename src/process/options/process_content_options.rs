@@ -191,9 +191,7 @@ impl ProcessContentOptions {
 
 impl ProcessContentOptions {
 	pub(crate) fn resolved_destination(&self) -> SPath {
-		self.destination
-			.clone()
-			.unwrap_or_else(|| derive_destination(&self.source))
+		self.destination.clone().unwrap_or_else(|| derive_destination(&self.source))
 	}
 
 	pub(crate) fn resolved_sanitize_model(&self) -> Option<&str> {
@@ -210,20 +208,13 @@ impl ProcessContentOptions {
 // region:    --- Support
 
 fn derive_destination(source: &str) -> SPath {
-	if let Some(web_source) = source
-		.strip_prefix("https://")
-		.or_else(|| source.strip_prefix("http://"))
-	{
+	if let Some(web_source) = source.strip_prefix("https://").or_else(|| source.strip_prefix("http://")) {
 		let authority_end = web_source.find(['/', '?', '#']).unwrap_or(web_source.len());
 		let authority = &web_source[..authority_end];
 		let remainder = &web_source[authority_end..];
 		let host = authority.rsplit('@').next().unwrap_or_default();
 		let host = sanitize_web_segment(host).unwrap_or_else(|| "source".to_owned());
-		let path = remainder
-			.split(['?', '#'])
-			.next()
-			.unwrap_or_default()
-			.trim_matches('/');
+		let path = remainder.split(['?', '#']).next().unwrap_or_default().trim_matches('/');
 
 		let mut destination = PathBuf::from("zmapr");
 		destination.push(host);

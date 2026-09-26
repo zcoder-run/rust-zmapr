@@ -143,10 +143,7 @@ async fn test_process_sanitize_map_uses_sanitized_artifacts() -> Result<()> {
 		output.stats.sanitize.as_ref().ok_or("expected Sanitize stats")?.failed,
 		0
 	);
-	assert_eq!(
-		output.content_root.as_std_path(),
-		destination.as_path()
-	);
+	assert_eq!(output.content_root.as_std_path(), destination.as_path());
 	assert_eq!(
 		fs::read(destination.join("intro.md"))?,
 		b"# Intro\nSanitize before mapping."
@@ -303,10 +300,7 @@ async fn test_process_sanitize_resume_reuses_unchanged_items_and_invalidates_cha
 	assert_eq!(journal_records.len(), 3);
 	assert_eq!(journal_records[0]["type"], "header");
 	assert_eq!(
-		journal_records
-			.iter()
-			.filter(|record| record["type"] == "done")
-			.count(),
+		journal_records.iter().filter(|record| record["type"] == "done").count(),
 		2
 	);
 
@@ -321,12 +315,7 @@ async fn test_process_sanitize_resume_reuses_unchanged_items_and_invalidates_cha
 		vec!["guide.md"]
 	);
 	assert_eq!(
-		modified_output
-			.stats
-			.sanitize
-			.as_ref()
-			.ok_or("expected Sanitize stats")?
-			.reused,
+		modified_output.stats.sanitize.as_ref().ok_or("expected Sanitize stats")?.reused,
 		1
 	);
 
@@ -472,9 +461,7 @@ impl MaprAiClient for ConcurrencyTrackingAiClient {
 			let _ = peak.fetch_max(active, Ordering::SeqCst);
 			tokio::time::sleep(Duration::from_millis(30)).await;
 			let _ = current.fetch_sub(1, Ordering::SeqCst);
-			Ok(MaprAiResponse::new(
-				"<SANITIZED_CONTENT>\nok\n</SANITIZED_CONTENT>",
-			))
+			Ok(MaprAiResponse::new("<SANITIZED_CONTENT>\nok\n</SANITIZED_CONTENT>"))
 		})
 	}
 }

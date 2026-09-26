@@ -1,6 +1,6 @@
 use super::pipeline::{StageOutput, WorkflowContext, build_fetch_request, run_pipeline};
-use super::publish::publish_final_artifacts;
 use super::progress::{ProcessProgressPublisher, new_completion_channel, new_progress_channel};
+use super::publish::publish_final_artifacts;
 use super::response::{ProcessContentHandle, ProcessContentOutput};
 use super::state::{ProcessQuery, StageSelection, new_process_state};
 use crate::fetchr::{FetchRequest, validate_source, validate_web_source};
@@ -145,10 +145,7 @@ fn validate_request(options: &ProcessContentOptions, fetch_request: Option<&Fetc
 
 	let layout = resolve_layout(options)?;
 
-	if !options.fetch
-		&& (options.sanitize || options.map)
-		&& !layout.fetch_cache.is_dir()
-		&& !layout.manifest.is_file()
+	if !options.fetch && (options.sanitize || options.map) && !layout.fetch_cache.is_dir() && !layout.manifest.is_file()
 	{
 		return Err(Error::MalformedState(format!(
 			"Fetch manifest does not exist: {}",
@@ -165,7 +162,10 @@ fn validate_request(options: &ProcessContentOptions, fetch_request: Option<&Fetc
 
 fn validate_destination_outside_source(source_path: &Path, destination: &SPath) -> Result<()> {
 	let source_path = std::fs::canonicalize(source_path).map_err(|error| {
-		Error::InvalidConfiguration(format!("failed to resolve source directory {}: {error}", source_path.display()))
+		Error::InvalidConfiguration(format!(
+			"failed to resolve source directory {}: {error}",
+			source_path.display()
+		))
 	})?;
 	let destination_path = canonical_destination_path(destination.as_std_path())?;
 
@@ -190,7 +190,10 @@ fn canonical_destination_path(path: &Path) -> Result<PathBuf> {
 
 	if absolute_path.exists() {
 		return std::fs::canonicalize(&absolute_path).map_err(|error| {
-			Error::InvalidConfiguration(format!("failed to resolve destination directory {}: {error}", path.display()))
+			Error::InvalidConfiguration(format!(
+				"failed to resolve destination directory {}: {error}",
+				path.display()
+			))
 		});
 	}
 
@@ -208,7 +211,10 @@ fn canonical_destination_path(path: &Path) -> Result<PathBuf> {
 	}
 
 	let mut destination_path = std::fs::canonicalize(existing_path).map_err(|error| {
-		Error::InvalidConfiguration(format!("failed to resolve destination directory {}: {error}", path.display()))
+		Error::InvalidConfiguration(format!(
+			"failed to resolve destination directory {}: {error}",
+			path.display()
+		))
 	})?;
 	for component in missing.into_iter().rev() {
 		destination_path.push(component);
@@ -246,8 +252,9 @@ fn resolve_source(options: &ProcessContentOptions) -> Option<ContentSource> {
 fn validate_prior_manifest_source(manifest_path: &SPath, configured_source: &str) -> Result<()> {
 	let content = simple_fs::read_to_string(manifest_path)
 		.map_err(|error| Error::MalformedState(format!("failed to read Fetch manifest {manifest_path}: {error}")))?;
-	let manifest: serde_json::Value = serde_json::from_str(&content)
-		.map_err(|error| Error::MalformedState(format!("failed to deserialize Fetch manifest {manifest_path}: {error}")))?;
+	let manifest: serde_json::Value = serde_json::from_str(&content).map_err(|error| {
+		Error::MalformedState(format!("failed to deserialize Fetch manifest {manifest_path}: {error}"))
+	})?;
 	let manifest_source = manifest
 		.get("source")
 		.and_then(serde_json::Value::as_str)

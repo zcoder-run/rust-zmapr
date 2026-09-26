@@ -3,9 +3,9 @@
 mod item;
 mod options;
 pub(crate) mod pipeline;
-mod publish;
 mod process_impl;
 pub(crate) mod progress;
+mod publish;
 mod response;
 mod source;
 pub(crate) mod state;

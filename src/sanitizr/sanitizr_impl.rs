@@ -114,55 +114,53 @@ pub(crate) async fn execute_sanitize(
 	}
 
 	let ai_client = select_active_ai_client(&config.model);
-	let tasks = pending_items
-		.into_iter()
-		.map(|(item, id, content, input_hash)| {
-			let ai_client = ai_client.clone();
-			let journal = journal.clone();
-			let progress = context.progress.clone();
-			let output_root = context.sanitize_output.clone();
-			let instructions = instructions.clone();
+	let tasks = pending_items.into_iter().map(|(item, id, content, input_hash)| {
+		let ai_client = ai_client.clone();
+		let journal = journal.clone();
+		let progress = context.progress.clone();
+		let output_root = context.sanitize_output.clone();
+		let instructions = instructions.clone();
 
-			async move {
-				progress.item_running(id, ProcessStage::Sanitize);
+		async move {
+			progress.item_running(id, ProcessStage::Sanitize);
 
-				let prompt = render_sanitize_prompt(&instructions, &item.relative_path, &content);
-				let output_path = output_root.join(item.relative_path.as_str());
-				let result: std::result::Result<(Vec<u8>, Option<genai::chat::Usage>), String> = async {
-					let response = ai_client.complete(&prompt).await.map_err(|error| error.to_string())?;
-					let sanitized_content =
-						parse_sanitized_content(&response.content).map_err(|error| error.to_string())?;
-					let output_bytes = sanitized_content.into_bytes();
-					write_sanitize_artifact(&output_path, &output_bytes).map_err(|error| error.to_string())?;
-					Ok((output_bytes, response.usage))
+			let prompt = render_sanitize_prompt(&instructions, &item.relative_path, &content);
+			let output_path = output_root.join(item.relative_path.as_str());
+			let result: std::result::Result<(Vec<u8>, Option<genai::chat::Usage>), String> = async {
+				let response = ai_client.complete(&prompt).await.map_err(|error| error.to_string())?;
+				let sanitized_content =
+					parse_sanitized_content(&response.content).map_err(|error| error.to_string())?;
+				let output_bytes = sanitized_content.into_bytes();
+				write_sanitize_artifact(&output_path, &output_bytes).map_err(|error| error.to_string())?;
+				Ok((output_bytes, response.usage))
+			}
+			.await;
+
+			match result {
+				Ok((output_bytes, usage)) => {
+					let output_hash = hash_bytes(&output_bytes);
+					if let Err(error) = journal.record_done(&item.relative_path, &input_hash, &output_hash) {
+						progress.record_journal_error(ProcessStage::Sanitize, &item.relative_path, error);
+					}
+					progress.item_completed(id, ProcessStage::Sanitize, Some(output_path.clone()), usage.clone());
+					Ok(ArtifactItem {
+						source: item.source,
+						relative_path: item.relative_path.clone(),
+						local_path: output_path,
+						media_type: item.media_type,
+						source_hash: Some(output_hash.clone()),
+					})
 				}
-				.await;
-
-				match result {
-					Ok((output_bytes, usage)) => {
-						let output_hash = hash_bytes(&output_bytes);
-						if let Err(error) = journal.record_done(&item.relative_path, &input_hash, &output_hash) {
-							progress.record_journal_error(ProcessStage::Sanitize, &item.relative_path, error);
-						}
-						progress.item_completed(id, ProcessStage::Sanitize, Some(output_path.clone()), usage.clone());
-						Ok(ArtifactItem {
-								source: item.source,
-								relative_path: item.relative_path.clone(),
-								local_path: output_path,
-								media_type: item.media_type,
-								source_hash: Some(output_hash.clone()),
-							})
+				Err(message) => {
+					if let Err(error) = journal.record_failed(&item.relative_path, &message) {
+						progress.record_journal_error(ProcessStage::Sanitize, &item.relative_path, error);
 					}
-					Err(message) => {
-						if let Err(error) = journal.record_failed(&item.relative_path, &message) {
-							progress.record_journal_error(ProcessStage::Sanitize, &item.relative_path, error);
-						}
-						progress.item_failed(id, ProcessStage::Sanitize, message.clone());
-						Err(message)
-					}
+					progress.item_failed(id, ProcessStage::Sanitize, message.clone());
+					Err(message)
 				}
 			}
-		});
+		}
+	});
 
 	let results = run_bounded(tasks, context.concurrency, "Sanitize").await?;
 	for artifact in results.into_iter().flatten() {

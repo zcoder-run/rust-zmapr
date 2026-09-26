@@ -88,9 +88,7 @@ impl JsonlAppender {
 	pub(crate) fn open(path: impl AsRef<Path>, truncate: bool) -> Result<Self> {
 		let path = path.as_ref();
 
-		if truncate
-			&& let Some(parent) = path.parent().filter(|parent| !parent.as_os_str().is_empty())
-		{
+		if truncate && let Some(parent) = path.parent().filter(|parent| !parent.as_os_str().is_empty()) {
 			fs::create_dir_all(parent)?;
 		}
 

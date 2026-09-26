@@ -121,49 +121,49 @@ pub(crate) async fn execute_content_map(
 	let tasks = pending_items
 		.into_iter()
 		.map(|(item, id, relative_path, source_hash, content)| {
-		let client = ai_client.clone();
-		let appender = appender.clone();
-		let progress = context.progress.clone();
+			let client = ai_client.clone();
+			let appender = appender.clone();
+			let progress = context.progress.clone();
 			async move {
-			progress.item_running(id, ProcessStage::Map);
+				progress.item_running(id, ProcessStage::Map);
 
-			let prompt = match render_file_prompt(&item.relative_path, &content) {
-				Ok(rendered) => rendered,
-				Err(err) => {
-					let message = err.to_string();
-					progress.item_failed(id, ProcessStage::Map, message.clone());
-					return None;
-				}
-			};
-			let ai_res = client.complete(&prompt).await;
-
-			let result: std::result::Result<(FileMapEntry, Option<genai::chat::Usage>), String> = match ai_res {
-				Ok(response) => parse_file_info(&response.content)
-					.map(|entry| (entry, response.usage))
-					.map_err(|err| err.to_string()),
-				Err(err) => Err(err.to_string()),
-			};
-
-			match result {
-				Ok((entry, usage)) => {
-					if let Err(error) =
-						appender.append(&JournalRecord::file_ok(&relative_path, &source_hash, entry.clone()))
-					{
-						progress.record_journal_error(ProcessStage::Map, &relative_path, error);
+				let prompt = match render_file_prompt(&item.relative_path, &content) {
+					Ok(rendered) => rendered,
+					Err(err) => {
+						let message = err.to_string();
+						progress.item_failed(id, ProcessStage::Map, message.clone());
+						return None;
 					}
-					progress.item_completed(id, ProcessStage::Map, None, usage.clone());
-					Some((item.relative_path, entry))
-				}
-				Err(err_msg) => {
-					if let Err(error) =
-						appender.append(&JournalRecord::file_failed(&relative_path, &source_hash, &err_msg))
-					{
-						progress.record_journal_error(ProcessStage::Map, &relative_path, error);
+				};
+				let ai_res = client.complete(&prompt).await;
+
+				let result: std::result::Result<(FileMapEntry, Option<genai::chat::Usage>), String> = match ai_res {
+					Ok(response) => parse_file_info(&response.content)
+						.map(|entry| (entry, response.usage))
+						.map_err(|err| err.to_string()),
+					Err(err) => Err(err.to_string()),
+				};
+
+				match result {
+					Ok((entry, usage)) => {
+						if let Err(error) =
+							appender.append(&JournalRecord::file_ok(&relative_path, &source_hash, entry.clone()))
+						{
+							progress.record_journal_error(ProcessStage::Map, &relative_path, error);
+						}
+						progress.item_completed(id, ProcessStage::Map, None, usage.clone());
+						Some((item.relative_path, entry))
 					}
-					progress.item_failed(id, ProcessStage::Map, err_msg.clone());
-					None
+					Err(err_msg) => {
+						if let Err(error) =
+							appender.append(&JournalRecord::file_failed(&relative_path, &source_hash, &err_msg))
+						{
+							progress.record_journal_error(ProcessStage::Map, &relative_path, error);
+						}
+						progress.item_failed(id, ProcessStage::Map, err_msg.clone());
+						None
+					}
 				}
-			}
 			}
 		});
 	let results = run_bounded(tasks, context.concurrency, "Map").await?;
