@@ -1,6 +1,6 @@
 [package]
 name = "zmapr"
-version = "0.0.2-WIP"
+version = "0.0.2"
 description = "Code and content mapper for AI-optimized context."
 edition = "2024"
 license = "MIT OR Apache-2.0"
