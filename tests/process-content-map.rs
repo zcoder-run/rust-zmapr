@@ -32,8 +32,8 @@ async fn test_process_content_map_respects_concurrency_limit() -> Result<()> {
 		fs::write(source_root.join(format!("item-{index}.md")), b"# Item\nContent to map.")?;
 	}
 	let destination = root.join("destination");
-	let options = ProcessContentOptions::new(path_text(&destination))
-		.with_source(path_text(&source_root))
+	let options = ProcessContentOptions::new(path_text(&source_root))
+		.with_dest(path_text(&destination))
 		.with_map(true)
 		.with_model("custom-model")
 		.with_concurrency(2);
@@ -67,8 +67,8 @@ async fn test_process_content_map_with_stub_publishes_output_and_content_map() -
 	fs::write(source_root.join("oversize.txt"), vec![b'a'; 300_000])?;
 	let destination = root.join("destination");
 
-	let options = ProcessContentOptions::new(path_text(&destination))
-		.with_source(path_text(&source_root))
+	let options = ProcessContentOptions::new(path_text(&source_root))
+		.with_dest(path_text(&destination))
 		.with_map(true)
 		.with_model("stub-model");
 
@@ -248,8 +248,8 @@ async fn test_process_content_map_journal_reuse_on_second_run() -> Result<()> {
 	let destination = root.join("destination");
 
 	let run_options = || {
-		ProcessContentOptions::new(path_text(&destination))
-			.with_source(path_text(&source_root))
+		ProcessContentOptions::new(path_text(&source_root))
+			.with_dest(path_text(&destination))
 			.with_map(true)
 			.with_model("stub-model")
 			.with_resume(true)
@@ -326,8 +326,8 @@ async fn test_process_content_map_copies_html_as_markdown() -> Result<()> {
 	fs::write(source_root.join("index.html"), html)?;
 	let destination = root.join("destination");
 
-	let options = ProcessContentOptions::new(path_text(&destination))
-		.with_source(path_text(&source_root))
+	let options = ProcessContentOptions::new(path_text(&source_root))
+		.with_dest(path_text(&destination))
 		.with_map(true)
 		.with_model("stub-model")
 		.with_resume(true);
@@ -368,8 +368,8 @@ async fn test_process_content_map_publishes_recovered_entries_before_ai_work() -
 	let destination = root.join("destination");
 
 	let run_options = || {
-		ProcessContentOptions::new(path_text(&destination))
-			.with_source(path_text(&source_root))
+		ProcessContentOptions::new(path_text(&source_root))
+			.with_dest(path_text(&destination))
 			.with_map(true)
 			.with_model("stub-model")
 			.with_resume(true)
@@ -446,8 +446,8 @@ async fn test_process_content_map_item_failure_is_recorded_and_stage_completes()
 	fs::write(source_root.join("fail.md"), b"# Fail\nTriggers error.")?;
 	let destination = root.join("destination");
 
-	let options = ProcessContentOptions::new(path_text(&destination))
-		.with_source(path_text(&source_root))
+	let options = ProcessContentOptions::new(path_text(&source_root))
+		.with_dest(path_text(&destination))
 		.with_map(true)
 		.with_model("custom-model");
 
@@ -515,8 +515,8 @@ async fn test_process_content_map_task_panic_returns_task_join_error() -> Result
 	fs::create_dir_all(&source_root)?;
 	fs::write(source_root.join("panic.md"), b"# Panic\nTrigger a task panic.")?;
 	let destination = root.join("destination");
-	let options = ProcessContentOptions::new(path_text(&destination))
-		.with_source(path_text(&source_root))
+	let options = ProcessContentOptions::new(path_text(&source_root))
+		.with_dest(path_text(&destination))
 		.with_map(true)
 		.with_model("custom-model");
 
@@ -563,8 +563,8 @@ async fn test_process_content_map_exact_usage_and_journal_emptied() -> Result<()
 	fs::write(source_root.join("two.md"), b"# Doc 2\nSecond doc.")?;
 	let destination = root.join("destination");
 
-	let options = ProcessContentOptions::new(path_text(&destination))
-		.with_source(path_text(&source_root))
+	let options = ProcessContentOptions::new(path_text(&source_root))
+		.with_dest(path_text(&destination))
 		.with_map(true)
 		.with_model("custom-model");
 

@@ -3,7 +3,7 @@ use zmapr::{ProcessContentOptions, process_content};
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
 	// -- Configure processing
-	let options = ProcessContentOptions::new("examples/.out/c01-fetch").with_source("src");
+	let options = ProcessContentOptions::new("src").with_dest("examples/.out/c01-fetch");
 
 	// -- Run processing
 	let handle = process_content(options).await?;

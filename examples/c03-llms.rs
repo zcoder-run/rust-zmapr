@@ -3,8 +3,8 @@ use zmapr::{FetchFormat, ItemStatus, ProcessContentOptions, ProgressEvent, proce
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
 	// -- Configure processing
-	let options = ProcessContentOptions::new("examples/.out/c03-llms")
-		.with_source("https://docs.typesafe.ai/introduction")
+	let options = ProcessContentOptions::new("https://docs.typesafe.ai/introduction")
+		.with_dest("examples/.out/c03-llms")
 		.with_llms(true) // default anyway
 		.with_max_depth(10);
 

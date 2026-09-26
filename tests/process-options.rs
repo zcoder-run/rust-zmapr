@@ -5,10 +5,12 @@ type Result<T> = core::result::Result<T, Box<dyn std::error::Error>>; // For tes
 #[test]
 fn test_process_options_defaults() -> Result<()> {
 	// -- Setup & Fixtures
-	let options = ProcessContentOptions::new("tests-data/.tmp/options-destination");
+	let options = ProcessContentOptions::new("tests-data/.tmp/options-source");
 
 	// -- Check
-	assert_eq!(options.source, None);
+	assert_eq!(options.source, "tests-data/.tmp/options-source");
+	assert!(options.destination.is_none());
+	assert!(options.fetch);
 	assert!(options.include.is_empty());
 	assert!(options.exclude.is_empty());
 	assert_eq!(options.format, FetchFormat::Md);
@@ -29,8 +31,8 @@ fn test_process_options_defaults() -> Result<()> {
 #[test]
 fn test_process_options_flat_chainable_configuration() -> Result<()> {
 	// -- Setup & Fixtures
-	let options = ProcessContentOptions::new("tests-data/.tmp/options-destination")
-		.with_source("docs")
+	let options = ProcessContentOptions::new("docs")
+		.with_dest("tests-data/.tmp/options-destination")
 		.with_include(["**/*.md"])
 		.append_include("README.md")
 		.append_includes(["guide/*.md", "docs/*.md"])
@@ -50,7 +52,8 @@ fn test_process_options_flat_chainable_configuration() -> Result<()> {
 		.with_concurrency(3);
 
 	// -- Check
-	assert_eq!(options.source.as_deref(), Some("docs"));
+	assert_eq!(options.source, "docs");
+	assert!(options.destination.is_some());
 	assert_eq!(options.include, vec!["**/*.md", "README.md", "guide/*.md", "docs/*.md"]);
 	assert_eq!(options.exclude, vec!["target/**", "tmp/**", "cache/**", "vendor/**"]);
 	assert_eq!(options.format, FetchFormat::Slim);
@@ -69,7 +72,7 @@ fn test_process_options_flat_chainable_configuration() -> Result<()> {
 #[test]
 fn test_process_options_default_model_is_stored() -> Result<()> {
 	// -- Setup & Fixtures
-	let options = ProcessContentOptions::new("tests-data/.tmp/options-destination").with_model("default-model");
+	let options = ProcessContentOptions::new("source").with_model("default-model");
 
 	// -- Check
 	assert_eq!(options.model.as_deref(), Some("default-model"));
@@ -82,7 +85,9 @@ fn test_process_options_default_model_is_stored() -> Result<()> {
 #[tokio::test]
 async fn test_process_options_validation_no_enabled_stage() -> Result<()> {
 	// -- Setup & Fixtures
-	let options = ProcessContentOptions::new("tests-data/.tmp/no-stage");
+	let options = ProcessContentOptions::new("source")
+		.with_dest("tests-data/.tmp/no-stage")
+		.with_fetch(false);
 
 	// -- Exec
 	let err = zmapr::process_content(options).await.err().ok_or("Expected validation error")?;
@@ -96,7 +101,8 @@ async fn test_process_options_validation_no_enabled_stage() -> Result<()> {
 #[tokio::test]
 async fn test_process_options_validation_zero_concurrency() -> Result<()> {
 	// -- Setup & Fixtures
-	let options = ProcessContentOptions::new("tests-data/.tmp/zero-concurrency")
+	let options = ProcessContentOptions::new("source")
+		.with_dest("tests-data/.tmp/zero-concurrency")
 		.with_map(true)
 		.with_concurrency(0);
 
@@ -112,7 +118,10 @@ async fn test_process_options_validation_zero_concurrency() -> Result<()> {
 #[tokio::test]
 async fn test_process_options_validation_ai_stage_without_model() -> Result<()> {
 	// -- Setup & Fixtures
-	let options = ProcessContentOptions::new("tests-data/.tmp/missing-model").with_map(true);
+	let options = ProcessContentOptions::new("source")
+		.with_dest("tests-data/.tmp/missing-model")
+		.with_fetch(false)
+		.with_map(true);
 
 	// -- Exec
 	let err = zmapr::process_content(options).await.err().ok_or("Expected validation error")?;
@@ -126,7 +135,9 @@ async fn test_process_options_validation_ai_stage_without_model() -> Result<()> 
 #[tokio::test]
 async fn test_process_options_validation_empty_sanitize_prompt_content() -> Result<()> {
 	// -- Setup & Fixtures
-	let options = ProcessContentOptions::new("tests-data/.tmp/empty-sanitize-prompt")
+	let options = ProcessContentOptions::new("source")
+		.with_dest("tests-data/.tmp/empty-sanitize-prompt")
+		.with_fetch(false)
 		.with_sanitize(true)
 		.with_model("sanitize-model")
 		.with_sanitize_prompt(SanitizePrompt::content("  "));
@@ -143,7 +154,9 @@ async fn test_process_options_validation_empty_sanitize_prompt_content() -> Resu
 #[tokio::test]
 async fn test_process_options_validation_missing_sanitize_prompt_file() -> Result<()> {
 	// -- Setup & Fixtures
-	let options = ProcessContentOptions::new("tests-data/.tmp/missing-sanitize-prompt")
+	let options = ProcessContentOptions::new("source")
+		.with_dest("tests-data/.tmp/missing-sanitize-prompt")
+		.with_fetch(false)
 		.with_sanitize(true)
 		.with_model("sanitize-model")
 		.with_sanitize_prompt(SanitizePrompt::file(

@@ -4,18 +4,17 @@
 
 `zmapr` maps local or website content into AI-oriented context through one workflow function. The workflow runs the selected stages in a fixed order: Fetch, Sanitize, then Map. The returned handle lets callers observe progress, query state, and await the final output.
 
-Fetch only, using `FetchFormat::Md` (Markdown) as the default format:
+Fetch only, using the destination derived from the source and `FetchFormat::Md` (Markdown) by default:
 
 ```rust
-ProcessContentOptions::new("target/zmapr-docs")
-    .with_source("https://example.com/docs");
+ProcessContentOptions::new("https://example.com/docs");
 ```
 
 Fetch and Map:
 
 ```rust
-ProcessContentOptions::new("target/zmapr-docs")
-    .with_source("docs")
+ProcessContentOptions::new("docs")
+    .with_dest("target/zmapr-docs")
     .with_map(true)
     .with_model("gpt-5-mini");
 ```
@@ -23,8 +22,8 @@ ProcessContentOptions::new("target/zmapr-docs")
 Fetch, Sanitize, and Map with separate models and custom Sanitize instructions:
 
 ```rust
-ProcessContentOptions::new("target/zmapr-docs")
-    .with_source("https://example.com/docs")
+ProcessContentOptions::new("https://example.com/docs")
+    .with_dest("target/zmapr-docs")
     .with_max_depth(3)
     .with_sanitize(true)
     .with_map(true)
@@ -36,11 +35,15 @@ ProcessContentOptions::new("target/zmapr-docs")
 Map an existing Fetch cache:
 
 ```rust
-ProcessContentOptions::new("target/zmapr-docs")
+ProcessContentOptions::new("docs")
+    .with_dest("target/zmapr-docs")
+    .with_fetch(false)
     .with_map(true)
     .with_model("gpt-5-mini")
     .with_resume(true);
 ```
+
+When Fetch is disabled, the configured source must match the source recorded in the prior Fetch manifest.
 
 The public entry point is:
 
@@ -141,8 +144,9 @@ pub struct WebContentSource {
 
 ```rust
 pub struct ProcessContentOptions {
-    pub destination: SPath,
-    pub source: Option<String>,
+    pub destination: Option<SPath>,
+    pub source: String,
+    pub fetch: bool,
     pub include: Vec<String>,
     pub exclude: Vec<String>,
     pub format: FetchFormat,
@@ -159,21 +163,29 @@ pub struct ProcessContentOptions {
 }
 ```
 
-`ProcessContentOptions::new(destination)` creates a workflow with optional stages disabled and no source selected.
+`ProcessContentOptions::new(source)` requires a local path or HTTP(S) URL. It enables Fetch by default, while Sanitize and Map remain disabled. `with_dest(destination)` optionally overrides the destination derived from the source.
 
 Defaults are:
+
+- `destination` is `None`; its resolved value is derived from the source when `with_dest` is not used.
+
+- Local directory `docs` derives to sibling destination `docs-zmapr`; local file `notes/guide.md` derives to `notes/guide-zmapr`.
+
+- Web URL `https://example.com/docs/` derives to `zmapr/example.com/docs` relative to the current directory, with sanitized URL path segments.
+
+- `fetch` is `true`.
 
 - `format` is `FetchFormat::Md`.
 - `max_depth` is `0`.
 - `llms` is `true`.
 - `sanitize`, `map`, and `resume` are `false`.
 - `concurrency` is `8`; it bounds concurrent item work in web Fetch, Sanitize, and Map. Local Fetch is sequential and does not use it.
-- Optional model, source, and prompt fields are `None`.
+- `source` is required by `new(source)`. Optional model and prompt fields are `None`.
 - `include` and `exclude` are empty.
 
 Builder methods are grouped by purpose:
 
-- Fetch: `with_source`, `with_include`, `append_include`, `append_includes`, `with_exclude`, `append_exclude`, `append_excludes`, `with_format`, `with_max_depth`, and `with_llms`.
+- Fetch: `with_dest`, `with_fetch`, `with_include`, `append_include`, `append_includes`, `with_exclude`, `append_exclude`, `append_excludes`, `with_format`, `with_max_depth`, and `with_llms`.
 - AI stages: `with_sanitize`, `with_map`, `with_model`, `with_sanitize_model`, `with_map_model`, and `with_sanitize_prompt`.
 - Workflow: `with_resume` and `with_concurrency`.
 
@@ -185,7 +197,7 @@ The Sanitize model resolves from `sanitize_model`, then `model`. The Map model r
 
 | Stage | Intent | Configuration |
 |---|---|---|
-| Fetch | Acquires local or web content and stores it in the Fetch cache. | Set `source`; configure selection patterns, format, crawl depth, and `llms`. |
+| Fetch | Acquires local or web content and stores it in the Fetch cache. | Set `source` with `new(source)`; Fetch is enabled by default. Configure selection patterns, format, crawl depth, and `llms`, or use `with_fetch(false)` to load a matching prior Fetch cache. |
 | Sanitize | Uses an AI model to clean supported text while preserving substantive content. | Set `sanitize`; configure a model and, optionally, replacement instructions. |
 | Map | Analyzes current artifacts and publishes a structured content map. | Set `map` and configure a model. |
 
@@ -300,10 +312,10 @@ Request validation checks the workflow before stage execution:
 - At least one of Fetch, Sanitize, or Map is enabled.
 - `concurrency` is greater than zero.
 - Every enabled AI stage resolves to a nonempty model.
-- A local source exists and is a file or directory, or a web source is a structurally valid HTTP(S) URL.
-- A local directory Fetch source must not resolve to the existing destination directory.
+- When Fetch is enabled, a local source exists and is a file or directory, or a web source is a structurally valid HTTP(S) URL.
+- A local source directory must not equal or contain the resolved destination.
 - A Sanitize prompt file exists, and inline prompt content is nonempty.
-- When Fetch is disabled and a downstream stage is enabled, a valid prior Fetch manifest and cache are required.
+- When Fetch is disabled and a downstream stage is enabled, a valid prior Fetch manifest and cache are required, and the manifest source must match the configured source.
 
 When resume is enabled, local Fetch may reuse a complete matching result when source, options, paths, and artifact hashes still match. Sanitize reuse additionally requires matching model, instructions, input hash, and output hash. Map reuse requires a matching journal fingerprint and unchanged artifact input. Missing, incompatible, or incomplete state is not treated as reusable.
 

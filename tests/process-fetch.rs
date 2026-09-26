@@ -391,7 +391,9 @@ async fn test_process_fetch_without_fetch_rejects_legacy_cache_layout() -> Resul
 	});
 	fs::write(metadata_root.join("manifest.json"), serde_json::to_vec(&manifest)?)?;
 
-	let options = ProcessContentOptions::new(path_text(&destination))
+	let options = ProcessContentOptions::new(path_text(&source_path))
+		.with_dest(path_text(&destination))
+		.with_fetch(false)
 		.with_sanitize(true)
 		.with_model("test-model");
 
@@ -485,6 +487,26 @@ async fn test_process_fetch_invalid_local_source_returns_structured_error() -> R
 }
 
 #[tokio::test]
+async fn test_process_fetch_uses_derived_destination_when_unset() -> Result<()> {
+	// -- Setup & Fixtures
+	let root = fixture_root("test_process_fetch_uses_derived_destination_when_unset")?;
+	let source_root = root.join("source");
+	fs::create_dir_all(&source_root)?;
+	fs::write(source_root.join("guide.md"), b"# Guide\n")?;
+	let destination = root.join("source-zmapr");
+
+	// -- Exec
+	let handle = process_content(ProcessContentOptions::new(path_text(&source_root))).await?;
+	let output = handle.wait_output().await?;
+
+	// -- Check
+	assert_eq!(output.content_root.as_std_path(), destination.as_path());
+	assert_eq!(fs::read(destination.join("guide.md"))?, b"# Guide\n");
+
+	Ok(())
+}
+
+#[tokio::test]
 async fn test_process_fetch_rejects_source_directory_equal_to_destination() -> Result<()> {
 	// -- Setup & Fixtures
 	let root = fixture_root("test_process_fetch_rejects_source_directory_equal_to_destination")?;
@@ -502,6 +524,29 @@ async fn test_process_fetch_rejects_source_directory_equal_to_destination() -> R
 	};
 	assert!(matches!(error, Error::InvalidConfiguration(_)));
 	assert!(!destination.join(".tmp-zmapr").exists());
+
+	Ok(())
+}
+
+#[tokio::test]
+async fn test_process_fetch_rejects_destination_inside_source_directory() -> Result<()> {
+	// -- Setup & Fixtures
+	let root = fixture_root("test_process_fetch_rejects_destination_inside_source_directory")?;
+	let source_root = root.join("source");
+	fs::create_dir_all(&source_root)?;
+	fs::write(source_root.join("guide.md"), b"# Guide\n")?;
+	let destination = source_root.join("output");
+
+	// -- Exec
+	let result = process_content(local_fetch_options(&source_root, &destination, false)).await;
+
+	// -- Check
+	let error = match result {
+		Err(error) => error,
+		Ok(_) => return Err("destination inside source directory should be rejected".into()),
+	};
+	assert!(matches!(error, Error::InvalidConfiguration(_)));
+	assert!(!destination.exists());
 
 	Ok(())
 }
@@ -536,7 +581,7 @@ async fn test_process_fetch_web_source_invalid_url_returns_structured_error() ->
 	// -- Setup & Fixtures
 	let root = fixture_root("test_process_fetch_web_source_invalid_url_returns_structured_error")?;
 	let destination = root.join("destination");
-	let options = ProcessContentOptions::new(path_text(&destination)).with_source("not-a-valid-url");
+	let options = ProcessContentOptions::new("not-a-valid-url").with_dest(path_text(&destination));
 
 	// -- Exec
 	let result = process_content(options).await;
@@ -559,7 +604,10 @@ async fn test_process_fetch_sanitize_without_model_returns_validation_error() ->
 	let destination = root.join("destination");
 
 	// -- Exec
-	let options = ProcessContentOptions::new(path_text(&destination)).with_sanitize(true);
+	let options = ProcessContentOptions::new("source")
+		.with_dest(path_text(&destination))
+		.with_fetch(false)
+		.with_sanitize(true);
 	let error = process_content(options).await.err().ok_or("Expected validation error")?;
 
 	// -- Check
@@ -599,8 +647,8 @@ async fn test_process_fetch_web_crawls_and_reports_progress() -> Result<()> {
 	let destination = root.join("destination");
 	let start_url = format!("http://127.0.0.1:{port}/site/");
 
-	let options = ProcessContentOptions::new(path_text(&destination))
-		.with_source(&start_url)
+	let options = ProcessContentOptions::new(&start_url)
+		.with_dest(path_text(&destination))
 		.with_max_depth(2);
 
 	// -- Exec
@@ -717,8 +765,8 @@ async fn test_process_fetch_web_respects_max_depth() -> Result<()> {
 	let destination = root.join("destination");
 	let start_url = format!("http://127.0.0.1:{port}/docs/");
 
-	let options = ProcessContentOptions::new(path_text(&destination))
-		.with_source(&start_url)
+	let options = ProcessContentOptions::new(&start_url)
+		.with_dest(path_text(&destination))
 		.with_max_depth(1);
 
 	// -- Exec
@@ -757,8 +805,8 @@ async fn test_process_fetch_web_records_failures_for_broken_links() -> Result<()
 	let destination = root.join("destination");
 	let start_url = format!("http://127.0.0.1:{port}/site/");
 
-	let options = ProcessContentOptions::new(path_text(&destination))
-		.with_source(&start_url)
+	let options = ProcessContentOptions::new(&start_url)
+		.with_dest(path_text(&destination))
 		.with_max_depth(1);
 
 	// -- Exec
@@ -809,8 +857,8 @@ async fn test_process_fetch_web_llms_discovery_and_fetch() -> Result<()> {
 	let destination = root.join("destination");
 	let start_url = format!("http://127.0.0.1:{port}/site/");
 
-	let options = ProcessContentOptions::new(path_text(&destination))
-		.with_source(&start_url)
+	let options = ProcessContentOptions::new(&start_url)
+		.with_dest(path_text(&destination))
 		.with_llms(true);
 
 	// -- Exec
@@ -867,8 +915,8 @@ async fn test_process_fetch_web_llms_fallback_on_missing() -> Result<()> {
 	let destination = root.join("destination");
 	let start_url = format!("http://127.0.0.1:{port}/site/");
 
-	let options = ProcessContentOptions::new(path_text(&destination))
-		.with_source(&start_url)
+	let options = ProcessContentOptions::new(&start_url)
+		.with_dest(path_text(&destination))
 		.with_llms(true)
 		.with_max_depth(1);
 
@@ -920,8 +968,8 @@ async fn test_process_fetch_web_llms_fallback_on_empty() -> Result<()> {
 	let destination = root.join("destination");
 	let start_url = format!("http://127.0.0.1:{port}/site/");
 
-	let options = ProcessContentOptions::new(path_text(&destination))
-		.with_source(&start_url)
+	let options = ProcessContentOptions::new(&start_url)
+		.with_dest(path_text(&destination))
 		.with_llms(true)
 		.with_max_depth(1);
 
@@ -970,8 +1018,8 @@ async fn test_process_fetch_web_extensionless_path_defaults_html() -> Result<()>
 	let destination = root.join("destination");
 	let start_url = format!("http://127.0.0.1:{port}/site/");
 
-	let options = ProcessContentOptions::new(path_text(&destination))
-		.with_source(&start_url)
+	let options = ProcessContentOptions::new(&start_url)
+		.with_dest(path_text(&destination))
 		.with_max_depth(2);
 
 	// -- Exec
@@ -1007,15 +1055,15 @@ async fn test_process_fetch_local_html_formats_and_path_collisions() -> Result<(
 	// -- Exec
 	let markdown_destination = root.join("markdown");
 	let markdown_handle = process_content(
-		ProcessContentOptions::new(path_text(&markdown_destination)).with_source(path_text(&source_root)),
+		ProcessContentOptions::new(path_text(&source_root)).with_dest(path_text(&markdown_destination)),
 	)
 	.await?;
 	let markdown_output = markdown_handle.wait_output().await?;
 
 	let raw_destination = root.join("raw");
 	let raw_handle = process_content(
-		ProcessContentOptions::new(path_text(&raw_destination))
-			.with_source(path_text(&source_root))
+		ProcessContentOptions::new(path_text(&source_root))
+			.with_dest(path_text(&raw_destination))
 			.with_format(FetchFormat::Raw),
 	)
 	.await?;
@@ -1023,8 +1071,8 @@ async fn test_process_fetch_local_html_formats_and_path_collisions() -> Result<(
 
 	let slim_destination = root.join("slim");
 	let slim_handle = process_content(
-		ProcessContentOptions::new(path_text(&slim_destination))
-			.with_source(path_text(&source_root))
+		ProcessContentOptions::new(path_text(&source_root))
+			.with_dest(path_text(&slim_destination))
 			.with_format(FetchFormat::Slim),
 	)
 	.await?;
@@ -1160,8 +1208,8 @@ fn fixture_root(test_name: &str) -> Result<PathBuf> {
 }
 
 fn local_fetch_options(source_path: &Path, destination: &Path, resume: bool) -> ProcessContentOptions {
-	ProcessContentOptions::new(path_text(destination))
-		.with_source(path_text(source_path))
+	ProcessContentOptions::new(path_text(source_path))
+		.with_dest(path_text(destination))
 		.with_resume(resume)
 }
 

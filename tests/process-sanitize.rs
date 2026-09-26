@@ -29,8 +29,8 @@ async fn test_process_sanitize_cleans_text_and_copies_ineligible_items() -> Resu
 	)?;
 	fs::write(source_root.join("image.png"), b"image bytes")?;
 	let destination = root.join("destination");
-	let options = ProcessContentOptions::new(path_text(&destination))
-		.with_source(path_text(&source_root))
+	let options = ProcessContentOptions::new(path_text(&source_root))
+		.with_dest(path_text(&destination))
 		.with_sanitize(true)
 		.with_model("stub-model");
 
@@ -128,8 +128,8 @@ async fn test_process_sanitize_map_uses_sanitized_artifacts() -> Result<()> {
 	fs::write(source_root.join("intro.md"), b"# Intro\nSanitize before mapping.")?;
 	fs::write(source_root.join("image.png"), b"image bytes")?;
 	let destination = root.join("destination");
-	let options = ProcessContentOptions::new(path_text(&destination))
-		.with_source(path_text(&source_root))
+	let options = ProcessContentOptions::new(path_text(&source_root))
+		.with_dest(path_text(&destination))
 		.with_sanitize(true)
 		.with_map(true)
 		.with_model("stub-model");
@@ -173,8 +173,8 @@ async fn test_process_sanitize_custom_instructions_replace_built_in_prompt() -> 
 	fs::create_dir_all(&source_root)?;
 	fs::write(source_root.join("guide.md"), b"Customizable content.")?;
 	let destination = root.join("destination");
-	let options = ProcessContentOptions::new(path_text(&destination))
-		.with_source(path_text(&source_root))
+	let options = ProcessContentOptions::new(path_text(&source_root))
+		.with_dest(path_text(&destination))
 		.with_sanitize(true)
 		.with_model("custom-model")
 		.with_sanitize_prompt(SanitizePrompt::content("CUSTOM RULES"));
@@ -205,8 +205,8 @@ async fn test_process_sanitize_missing_output_tags_records_failure_and_completes
 	fs::create_dir_all(&source_root)?;
 	fs::write(source_root.join("guide.md"), b"Content that fails parsing.")?;
 	let destination = root.join("destination");
-	let options = ProcessContentOptions::new(path_text(&destination))
-		.with_source(path_text(&source_root))
+	let options = ProcessContentOptions::new(path_text(&source_root))
+		.with_dest(path_text(&destination))
 		.with_sanitize(true)
 		.with_model("custom-model");
 
@@ -407,8 +407,8 @@ async fn test_process_sanitize_respects_concurrency_limit() -> Result<()> {
 		fs::write(source_root.join(format!("item-{index}.md")), b"Content to sanitize.")?;
 	}
 	let destination = root.join("destination");
-	let options = ProcessContentOptions::new(path_text(&destination))
-		.with_source(path_text(&source_root))
+	let options = ProcessContentOptions::new(path_text(&source_root))
+		.with_dest(path_text(&destination))
 		.with_sanitize(true)
 		.with_model("custom-model")
 		.with_concurrency(2);
@@ -438,8 +438,8 @@ async fn test_process_sanitize_task_panic_returns_task_join_error() -> Result<()
 	fs::create_dir_all(&source_root)?;
 	fs::write(source_root.join("panic.md"), b"# Panic\nTrigger a task panic.")?;
 	let destination = root.join("destination");
-	let options = ProcessContentOptions::new(path_text(&destination))
-		.with_source(path_text(&source_root))
+	let options = ProcessContentOptions::new(path_text(&source_root))
+		.with_dest(path_text(&destination))
 		.with_sanitize(true)
 		.with_model("custom-model");
 
@@ -537,8 +537,8 @@ fn sanitize_options(
 	model: &str,
 	prompt: Option<SanitizePrompt>,
 ) -> ProcessContentOptions {
-	let options = ProcessContentOptions::new(path_text(destination))
-		.with_source(path_text(source_root))
+	let options = ProcessContentOptions::new(path_text(source_root))
+		.with_dest(path_text(destination))
 		.with_sanitize(true)
 		.with_model(model)
 		.with_resume(true);

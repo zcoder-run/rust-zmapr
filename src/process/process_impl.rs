@@ -7,12 +7,13 @@ use crate::fetchr::{FetchRequest, validate_source, validate_web_source};
 use crate::sanitizr::sanitize_journal_path;
 use crate::{ContentSource, Error, ProcessContentOptions, ProcessStage, Result, SanitizePrompt};
 use simple_fs::SPath;
+use std::path::{Component, Path, PathBuf};
 
 #[doc = include_str!("../../docs/rustdoc/process/process-content.md")]
 pub async fn process_content(options: ProcessContentOptions) -> Result<ProcessContentHandle> {
 	let fetch_request = build_fetch_request(&options);
 	let layout = validate_request(&options, fetch_request.as_ref())?;
-	let source = resolve_source(&options, fetch_request.as_ref(), &layout);
+	let source = resolve_source(&options);
 	let (progress_tx, progress_rx) = new_progress_channel()?;
 	let state = new_process_state(StageSelection {
 		fetch: fetch_request.is_some(),
@@ -87,11 +88,13 @@ fn process_content_output(
 }
 
 fn validate_request(options: &ProcessContentOptions, fetch_request: Option<&FetchRequest>) -> Result<WorkflowLayout> {
-	if options.source.is_none() && !options.sanitize && !options.map {
+	if !options.fetch && !options.sanitize && !options.map {
 		return Err(Error::InvalidConfiguration(
 			"at least one processing stage must be enabled".into(),
 		));
 	}
+
+	let destination = options.resolved_destination();
 
 	if options.concurrency == 0 {
 		return Err(Error::InvalidConfiguration(
@@ -103,23 +106,17 @@ fn validate_request(options: &ProcessContentOptions, fetch_request: Option<&Fetc
 		match fetch {
 			FetchRequest::Local(local_request) => {
 				validate_source(&local_request.source)?;
-				if local_request.source.path.is_dir() && options.destination.as_std_path().exists() {
-					let source_path = std::fs::canonicalize(local_request.source.path.as_std_path()).map_err(|error| {
-						Error::InvalidConfiguration(format!("failed to resolve source directory: {error}"))
-					})?;
-					let destination_path = std::fs::canonicalize(options.destination.as_std_path()).map_err(|error| {
-						Error::InvalidConfiguration(format!("failed to resolve destination directory: {error}"))
-					})?;
-					if source_path == destination_path {
-						return Err(Error::InvalidConfiguration(
-							"source directory must not be the destination".into(),
-						));
-					}
-				}
 			}
 			FetchRequest::Web(web_request) => {
 				validate_web_source(&web_request.source)?;
 			}
+		}
+	}
+
+	if !options.source.starts_with("http://") && !options.source.starts_with("https://") {
+		let source_path = Path::new(&options.source);
+		if source_path.is_dir() {
+			validate_destination_outside_source(source_path, &destination)?;
 		}
 	}
 
@@ -146,9 +143,9 @@ fn validate_request(options: &ProcessContentOptions, fetch_request: Option<&Fetc
 		validate_model(ProcessStage::Map, options.resolved_map_model())?;
 	}
 
-	let layout = resolve_layout(options);
+	let layout = resolve_layout(options)?;
 
-	if options.source.is_none()
+	if !options.fetch
 		&& (options.sanitize || options.map)
 		&& !layout.fetch_cache.is_dir()
 		&& !layout.manifest.is_file()
@@ -159,31 +156,110 @@ fn validate_request(options: &ProcessContentOptions, fetch_request: Option<&Fetc
 		)));
 	}
 
+	if !options.fetch && (options.sanitize || options.map) {
+		validate_prior_manifest_source(&layout.manifest, &options.source)?;
+	}
+
 	Ok(layout)
 }
 
-fn resolve_source(
-	options: &ProcessContentOptions,
-	fetch_request: Option<&FetchRequest>,
-	layout: &WorkflowLayout,
-) -> Option<ContentSource> {
-	match fetch_request {
-		Some(FetchRequest::Local(local_request)) => Some(ContentSource::LocalPath(local_request.source.clone())),
-		Some(FetchRequest::Web(web_request)) => Some(ContentSource::Web(web_request.source.clone())),
-		None if options.source.is_none() => read_prior_manifest_source(&layout.manifest),
-		None => None,
+fn validate_destination_outside_source(source_path: &Path, destination: &SPath) -> Result<()> {
+	let source_path = std::fs::canonicalize(source_path).map_err(|error| {
+		Error::InvalidConfiguration(format!("failed to resolve source directory {}: {error}", source_path.display()))
+	})?;
+	let destination_path = canonical_destination_path(destination.as_std_path())?;
+
+	if destination_path == source_path || destination_path.starts_with(&source_path) {
+		return Err(Error::InvalidConfiguration(
+			"destination must not be equal to or inside the local source directory".into(),
+		));
+	}
+
+	Ok(())
+}
+
+fn canonical_destination_path(path: &Path) -> Result<PathBuf> {
+	let absolute_path = if path.is_absolute() {
+		path.to_path_buf()
+	} else {
+		std::env::current_dir()
+			.map_err(|error| Error::InvalidConfiguration(format!("failed to resolve current directory: {error}")))?
+			.join(path)
+	};
+	let absolute_path = normalize_path(&absolute_path);
+
+	if absolute_path.exists() {
+		return std::fs::canonicalize(&absolute_path).map_err(|error| {
+			Error::InvalidConfiguration(format!("failed to resolve destination directory {}: {error}", path.display()))
+		});
+	}
+
+	let mut existing_path = absolute_path.as_path();
+	let mut missing = Vec::new();
+	while !existing_path.exists() {
+		let Some(file_name) = existing_path.file_name() else {
+			break;
+		};
+		missing.push(file_name.to_os_string());
+		let Some(parent) = existing_path.parent() else {
+			break;
+		};
+		existing_path = parent;
+	}
+
+	let mut destination_path = std::fs::canonicalize(existing_path).map_err(|error| {
+		Error::InvalidConfiguration(format!("failed to resolve destination directory {}: {error}", path.display()))
+	})?;
+	for component in missing.into_iter().rev() {
+		destination_path.push(component);
+	}
+
+	Ok(normalize_path(&destination_path))
+}
+
+fn normalize_path(path: &Path) -> PathBuf {
+	let mut normalized = PathBuf::new();
+	for component in path.components() {
+		match component {
+			Component::CurDir => {}
+			Component::ParentDir => {
+				if !normalized.pop() {
+					normalized.push("..");
+				}
+			}
+			component => normalized.push(component.as_os_str()),
+		}
+	}
+
+	normalized
+}
+
+fn resolve_source(options: &ProcessContentOptions) -> Option<ContentSource> {
+	let source = options.source.as_str();
+	if source.starts_with("http://") || source.starts_with("https://") {
+		Some(ContentSource::web(source))
+	} else {
+		Some(ContentSource::local(source))
 	}
 }
 
-fn read_prior_manifest_source(manifest_path: &SPath) -> Option<ContentSource> {
-	let content = simple_fs::read_to_string(manifest_path).ok()?;
-	let manifest: serde_json::Value = serde_json::from_str(&content).ok()?;
-	let source_str = manifest.get("source")?.as_str()?;
-	if source_str.starts_with("http://") || source_str.starts_with("https://") {
-		Some(ContentSource::web(source_str))
-	} else {
-		Some(ContentSource::local(source_str))
+fn validate_prior_manifest_source(manifest_path: &SPath, configured_source: &str) -> Result<()> {
+	let content = simple_fs::read_to_string(manifest_path)
+		.map_err(|error| Error::MalformedState(format!("failed to read Fetch manifest {manifest_path}: {error}")))?;
+	let manifest: serde_json::Value = serde_json::from_str(&content)
+		.map_err(|error| Error::MalformedState(format!("failed to deserialize Fetch manifest {manifest_path}: {error}")))?;
+	let manifest_source = manifest
+		.get("source")
+		.and_then(serde_json::Value::as_str)
+		.ok_or_else(|| Error::MalformedState("Fetch manifest is missing source metadata".to_owned()))?;
+
+	if manifest_source != configured_source {
+		return Err(Error::InvalidConfiguration(
+			"configured source does not match the Fetch manifest source".to_owned(),
+		));
 	}
+
+	Ok(())
 }
 
 fn validate_model(stage: ProcessStage, model: Option<&str>) -> Result<()> {
@@ -196,11 +272,12 @@ fn validate_model(stage: ProcessStage, model: Option<&str>) -> Result<()> {
 	Ok(())
 }
 
-fn resolve_layout(options: &ProcessContentOptions) -> WorkflowLayout {
-	let destination = options.destination.clone();
+fn resolve_layout(options: &ProcessContentOptions) -> Result<WorkflowLayout> {
+	let destination = options.resolved_destination();
 	let metadata_root = destination.join(".tmp-zmapr");
+	let content_map = destination.join("_content-map.json");
 
-	WorkflowLayout {
+	Ok(WorkflowLayout {
 		destination,
 		fetch_cache: metadata_root.join("01-fetch"),
 		sanitize_output: metadata_root.join("02-sanitize"),
@@ -211,8 +288,8 @@ fn resolve_layout(options: &ProcessContentOptions) -> WorkflowLayout {
 		),
 		manifest: metadata_root.join("manifest.json"),
 		journal: metadata_root.join("content-map.journal.jsonl"),
-		content_map: options.destination.join("_content-map.json"),
-	}
+		content_map,
+	})
 }
 
 // endregion: --- Support

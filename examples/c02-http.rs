@@ -3,8 +3,8 @@ use zmapr::{FetchFormat, ItemStatus, ProcessContentOptions, process_content};
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
 	// -- Configure processing
-	let options = ProcessContentOptions::new("examples/.out/c02-http")
-		.with_source("https://docs.rs/genai/0.6.5/genai/")
+	let options = ProcessContentOptions::new("https://docs.rs/genai/0.6.5/genai/")
+		.with_dest("examples/.out/c02-http")
 		.with_format(FetchFormat::Md)
 		.with_llms(false) // default true
 		.with_max_depth(1);

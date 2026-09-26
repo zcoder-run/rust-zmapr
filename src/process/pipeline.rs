@@ -71,7 +71,10 @@ impl StageOutput {
 // region:    --- Pipeline
 
 pub(crate) fn build_fetch_request(options: &ProcessContentOptions) -> Option<FetchRequest> {
-	let source = options.source.as_deref()?;
+	if !options.fetch {
+		return None;
+	}
+	let source = options.source.as_str();
 
 	if source.starts_with("http://") || source.starts_with("https://") {
 		Some(FetchRequest::Web(
