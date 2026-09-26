@@ -31,6 +31,8 @@ pub struct ProcessContentOutput {
 	pub items: Vec<ItemState>,
 	/// Validated statistics for the completed workflow.
 	pub stats: FinalStats,
+	/// Non-fatal journal append errors, including the stage, item path, and error detail.
+	pub journal_errors: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

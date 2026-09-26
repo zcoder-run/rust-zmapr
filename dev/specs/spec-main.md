@@ -248,7 +248,7 @@ The engine adds the artifact's relative path, wraps the input in `<SANITIZE_INPU
 
 Per-item model usage is attached to the successful `ItemStageState` and aggregated in the stage and workflow statistics.
 
-When `resume` is enabled, Sanitize reuses an output only if the manifest's model and instruction hash match, the input hash is unchanged, and the output still matches its recorded hash. The version 1 manifest is stored at `.tmp-zmapr/sanitize-manifest.json`.
+Sanitize appends each eligible item's `done` or `failed` record to `.tmp-zmapr/sanitize.journal.jsonl` as work completes. A `done` record is written only after its output is complete. With `resume` enabled, an output is reused only when the journal header's model, instruction hash, and input artifact root match, the input hash is unchanged, and the output exists with its recorded hash. For the same path, the latest record wins, so a later failure invalidates an earlier success. Truncated final lines are discarded during recovery, and malformed interior lines are skipped and reported. Journal append errors are reported through `ProcessContentOutput::journal_errors` without failing the item.
 
 Pending items are processed with bounded scheduling: at most `concurrency` tasks are spawned at once, and a new task is spawned as each one finishes.
 
@@ -258,7 +258,7 @@ Map analyzes the artifacts from the preceding stage directly. It does not create
 
 Pending items are processed with bounded scheduling: at most `concurrency` tasks are spawned at once, and a new task is spawned as each one finishes.
 
-Map writes `<destination>/_content-map.json`. The version 1 JSON document contains a provenance header, `file_map`, `folder_map`, and `file_metadata`. The internal per-file size limit is 200,000 bytes. The journal is version 1 NDJSON at `.tmp-zmapr/content-map.journal.jsonl`; it has a header followed by file or folder success and failure records, though current Map execution records files only. Appended lines are flushed. Its fingerprint includes the model, prompt version, and input artifact root. With `resume` enabled, file entries are reused when the journal header matches and the input path and hash match. Incompatible journal headers are invalidated. With resume disabled, entries are not reused; a failure-free run clears the journal after publishing the map, while item failures leave records retained. Per-item Map tasks currently ignore journal append errors, so those errors are not surfaced as Map item failures.
+The version 1 JSON document contains a provenance header, `file_map`, `folder_map`, and `file_metadata`. The internal per-file size limit is 200,000 bytes. The journal is version 1 NDJSON at `.tmp-zmapr/content-map.journal.jsonl`; it has a header followed by file or folder success and failure records, though current Map execution records files only. Each record is serialized into one line buffer and written with a single `write_all` call, then flushed. Its fingerprint includes the model, prompt version, and input artifact root. With `resume` enabled, file entries are reused when the journal header matches and the input path and hash match. Incompatible journal headers are invalidated. With resume disabled, entries are not reused; a failure-free run clears the journal after publishing the map, while item failures leave records retained. Map journal append errors are reported through `ProcessContentOutput::journal_errors` and do not fail the item or stage.
 
 The versioned Map prompt (`PROMPT_VERSION` is currently 2) supplies a file path and content and requires a `<FILE_INFO>` block containing JSON fields for `summary`, `when_to_use`, `public_types`, `public_functions`, and `topics`. The list fields accept arrays or comma-separated strings. Missing fields default to empty values, and Markdown fences around the JSON are accepted. Topic normalization retains at most seven nonempty topics and truncates each to three words. Missing tags and malformed JSON become `MissingTag` and `MalformedResponse` item failures.
 
@@ -307,6 +307,8 @@ Request validation checks the workflow before stage execution:
 
 When resume is enabled, local Fetch may reuse a complete matching result when source, options, paths, and artifact hashes still match. Sanitize reuse additionally requires matching model, instructions, input hash, and output hash. Map reuse requires a matching journal fingerprint and unchanged artifact input. Missing, incompatible, or incomplete state is not treated as reusable.
 
+Only one workflow run per destination directory is supported at a time. The journals do not provide cross-process locking.
+
 Durable publication uses deterministic serialization and atomic replacement where applicable. Temporary sibling files are written first, then renamed into their final locations.
 
 ## Results
@@ -323,6 +325,7 @@ pub struct ProcessContentOutput {
     pub content_map_path: Option<SPath>,
     pub items: Vec<ItemState>,
     pub stats: FinalStats,
+    pub journal_errors: Vec<String>,
 }
 
 

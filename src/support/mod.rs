@@ -1,8 +1,10 @@
 // region:    --- Modules
 
+mod jsonl;
 mod time;
 mod tasks;
 
+pub(crate) use jsonl::*;
 pub(crate) use time::*;
 pub(crate) use tasks::*;
 

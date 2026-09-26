@@ -17,7 +17,7 @@ pub(crate) struct WorkflowContext {
 	pub(crate) destination: SPath,
 	pub(crate) fetch_cache: SPath,
 	pub(crate) sanitize_output: SPath,
-	pub(crate) sanitize_manifest: SPath,
+	pub(crate) sanitize_journal: SPath,
 	pub(crate) manifest: SPath,
 	pub(crate) journal: SPath,
 	pub(crate) content_map: SPath,

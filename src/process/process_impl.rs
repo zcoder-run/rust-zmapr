@@ -4,6 +4,7 @@ use super::progress::{ProcessProgressPublisher, new_completion_channel, new_prog
 use super::response::{ProcessContentHandle, ProcessContentOutput};
 use super::state::{ProcessQuery, StageSelection, new_process_state};
 use crate::fetchr::{FetchRequest, validate_source, validate_web_source};
+use crate::sanitizr::sanitize_journal_path;
 use crate::{ContentSource, Error, ProcessContentOptions, ProcessStage, Result, SanitizePrompt};
 use simple_fs::SPath;
 
@@ -25,7 +26,7 @@ pub async fn process_content(options: ProcessContentOptions) -> Result<ProcessCo
 		destination: layout.destination,
 		fetch_cache: layout.fetch_cache,
 		sanitize_output: layout.sanitize_output,
-		sanitize_manifest: layout.sanitize_manifest,
+		sanitize_journal: layout.sanitize_journal,
 		manifest: layout.manifest,
 		journal: layout.journal,
 		content_map: layout.content_map,
@@ -61,7 +62,7 @@ struct WorkflowLayout {
 	destination: SPath,
 	fetch_cache: SPath,
 	sanitize_output: SPath,
-	sanitize_manifest: SPath,
+	sanitize_journal: SPath,
 	manifest: SPath,
 	journal: SPath,
 	content_map: SPath,
@@ -81,6 +82,7 @@ fn process_content_output(
 		content_map_path: (options.map && context.content_map.is_file()).then(|| context.content_map.clone()),
 		items,
 		stats,
+		journal_errors: context.progress.journal_errors(),
 	})
 }
 
@@ -202,7 +204,11 @@ fn resolve_layout(options: &ProcessContentOptions) -> WorkflowLayout {
 		destination,
 		fetch_cache: metadata_root.join("01-fetch"),
 		sanitize_output: metadata_root.join("02-sanitize"),
-		sanitize_manifest: metadata_root.join("sanitize-manifest.json"),
+		sanitize_journal: SPath::from(
+			sanitize_journal_path(metadata_root.as_std_path().join("manifest.json"))
+				.to_string_lossy()
+				.into_owned(),
+		),
 		manifest: metadata_root.join("manifest.json"),
 		journal: metadata_root.join("content-map.journal.jsonl"),
 		content_map: options.destination.join("_content-map.json"),

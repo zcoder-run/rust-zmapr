@@ -294,8 +294,42 @@ async fn test_process_sanitize_resume_reuses_unchanged_items_and_invalidates_cha
 		second_output.stats.sanitize.as_ref().ok_or("expected Sanitize stats")?.reused,
 		2
 	);
+	let journal_path = destination.join(".tmp-zmapr").join("sanitize.journal.jsonl");
+	let journal_contents = fs::read_to_string(&journal_path)?;
+	let journal_records = journal_contents
+		.lines()
+		.map(serde_json::from_str::<serde_json::Value>)
+		.collect::<std::result::Result<Vec<_>, _>>()?;
+	assert_eq!(journal_records.len(), 3);
+	assert_eq!(journal_records[0]["type"], "header");
+	assert_eq!(
+		journal_records
+			.iter()
+			.filter(|record| record["type"] == "done")
+			.count(),
+		2
+	);
 
 	// -- Exec & Check
+	let sanitize_root = destination.join(".tmp-zmapr").join("02-sanitize");
+	fs::write(sanitize_root.join("guide.md"), b"tampered output")?;
+	let modified_output_handle =
+		process_content(sanitize_options(&destination, &source_root, "stub-model", None)).await?;
+	let modified_output = modified_output_handle.wait_output().await?;
+	assert_eq!(
+		relative_paths(&modified_output.items, ProcessStage::Sanitize, ItemStatus::Completed),
+		vec!["guide.md"]
+	);
+	assert_eq!(
+		modified_output
+			.stats
+			.sanitize
+			.as_ref()
+			.ok_or("expected Sanitize stats")?
+			.reused,
+		1
+	);
+
 	fs::write(source_root.join("intro.md"), b"# Intro\nUpdated content.")?;
 	let changed_source_handle =
 		process_content(sanitize_options(&destination, &source_root, "stub-model", None)).await?;

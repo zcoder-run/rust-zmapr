@@ -3,7 +3,7 @@ use zmapr::{ItemStatus, ProcessContentOptions, ProgressEvent, process_content};
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
 	// -- Configure processing
-	let options = ProcessContentOptions::new("examples/.out/c04-mapr")
+	let options = ProcessContentOptions::new("examples/.out/c04-sanitize")
 		.with_source("https://docs.rs/genai/0.7.0-beta.23/genai/")
 		.with_max_depth(1)
 		.with_sanitize(true)

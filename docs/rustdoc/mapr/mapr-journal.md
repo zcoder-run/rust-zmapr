@@ -16,9 +16,11 @@ The index stores only successful entries, so its file and folder counts do not i
 
 ## Appending records
 
-[`JournalAppender::create_new`] creates parent directories as needed, truncates the target, and writes the header. [`JournalAppender::open_existing`] opens a file for appending without validating its content. [`JournalAppender::append`] writes each record as one JSON line and flushes it.
+[`JournalAppender::create_new`] creates parent directories as needed, truncates the target, and writes the header. [`JournalAppender::open_existing`] opens a file for appending without validating its content. [`JournalAppender::append`] serializes each record into one line buffer, writes it with a single `write_all` call, and flushes it.
 
 Cloned appenders share a synchronized file handle. [`JournalAppender::empty`] truncates that file without writing a replacement header. A later call to [`init_or_load_journal`] initializes an empty journal with a header.
+
+Map journal append failures are reported through `ProcessContentOutput::journal_errors` with the stage and item path. They do not fail the item or Map stage.
 
 ## Record construction and maintenance
 

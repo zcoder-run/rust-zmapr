@@ -37,7 +37,11 @@ A custom `sanitize_prompt` replaces the built-in Sanitize instructions. Inline p
 
 When `resume` is enabled, successful unchanged work may be reused when the stage's saved state and inputs remain compatible. Reuse rules depend on the stage.
 
+Sanitize records each completed item's result in `.tmp-zmapr/sanitize.journal.jsonl`. Resume reuses an entry only when the journal header, input hash, and existing output hash match the current run. For the same path, the latest journal record wins.
+
 `concurrency` limits parallel item processing for web Fetch, Sanitize, and Map. Local Fetch processes items sequentially and does not use this limit.
+
+Only one workflow run per destination directory is supported at a time. Journals do not provide cross-process locking.
 
 ## Configuration validation
 

@@ -1118,7 +1118,7 @@ https://docs.typesafe.ai/doc/page2.md#anchor
 			destination: dest.clone(),
 			fetch_cache: fetch_cache.clone(),
 			sanitize_output: dest.join(".tmp-zmapr/stages/sanitize"),
-			sanitize_manifest: dest.join(".tmp-zmapr/sanitize-manifest.json"),
+			sanitize_journal: dest.join(".tmp-zmapr/sanitize.journal.jsonl"),
 			manifest: manifest.clone(),
 			journal: dest.join(".tmp-zmapr/content-map.journal.jsonl"),
 			content_map: dest.join("content-map.json"),

@@ -146,12 +146,20 @@ pub(crate) async fn execute_content_map(
 
 			match result {
 				Ok((entry, usage)) => {
-					let _ = appender.append(&JournalRecord::file_ok(&relative_path, &source_hash, entry.clone()));
+					if let Err(error) =
+						appender.append(&JournalRecord::file_ok(&relative_path, &source_hash, entry.clone()))
+					{
+						progress.record_journal_error(ProcessStage::Map, &relative_path, error);
+					}
 					progress.item_completed(id, ProcessStage::Map, None, usage.clone());
 					Some((item.relative_path, entry))
 				}
 				Err(err_msg) => {
-					let _ = appender.append(&JournalRecord::file_failed(&relative_path, &source_hash, &err_msg));
+					if let Err(error) =
+						appender.append(&JournalRecord::file_failed(&relative_path, &source_hash, &err_msg))
+					{
+						progress.record_journal_error(ProcessStage::Map, &relative_path, error);
+					}
 					progress.item_failed(id, ProcessStage::Map, err_msg.clone());
 					None
 				}

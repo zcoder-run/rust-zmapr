@@ -1,12 +1,11 @@
+use super::sanitizr_journal::{HeaderInfo, SanitizeJournal};
 use super::sanitizr_prompt::{parse_sanitized_content, render_sanitize_prompt, resolve_instructions};
 use crate::mapr::{is_text_mappable, select_active_ai_client};
 use crate::process::pipeline::{ArtifactItem, ArtifactSet, StageOutput, WorkflowContext};
 use crate::process::{ItemId, ProcessStage, SanitizePrompt};
 use crate::support::{hash_bytes, run_bounded};
 use crate::{Error, Result};
-use serde::{Deserialize, Serialize};
 use simple_fs::SPath;
-use std::collections::HashMap;
 use std::path::Path;
 
 // region:    --- Types
@@ -16,21 +15,6 @@ pub(crate) struct SanitizeConfig {
 	pub(crate) model: String,
 	pub(crate) prompt: Option<SanitizePrompt>,
 	pub(crate) max_size: usize,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct SanitizeManifest {
-	version: u32,
-	model: String,
-	prompt_hash: String,
-	items: Vec<SanitizeManifestItem>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct SanitizeManifestItem {
-	relative_path: String,
-	input_hash: String,
-	output_hash: String,
 }
 
 // endregion: --- Types
@@ -54,11 +38,23 @@ pub(crate) async fn execute_sanitize(
 	context.progress.set_stage_total(ProcessStage::Sanitize);
 
 	let instructions = resolve_instructions(config.prompt.as_ref())?;
-	let prompt_hash = hash_bytes(instructions.as_bytes());
-	let prior_manifest = load_sanitize_manifest(context, &config.model, &prompt_hash);
+	let instruction_hash = hash_bytes(instructions.as_bytes());
+	let (journal, journal_report) = SanitizeJournal::open(
+		&context.sanitize_journal,
+		HeaderInfo {
+			model: config.model.clone(),
+			instruction_hash,
+			input_root: input.root.as_str().to_owned(),
+		},
+		context.resume,
+	)?;
+	for line in journal_report.malformed_lines {
+		context
+			.progress
+			.record_journal_warning(ProcessStage::Sanitize, format!("malformed record on line {line}"));
+	}
 	let mut artifacts = Vec::new();
 	let mut pending_items = Vec::new();
-	let mut manifest_items = Vec::new();
 
 	for (item, id) in input.items.into_iter().zip(item_ids) {
 		let contents = match std::fs::read(item.local_path.as_std_path()) {
@@ -80,17 +76,12 @@ pub(crate) async fn execute_sanitize(
 			&& contents.len() <= config.max_size
 			&& let Ok(content) = std::str::from_utf8(&contents)
 		{
-			if let Some(output_hash) = reusable_output_hash(context, &item.relative_path, &input_hash, &prior_manifest)
-			{
-				let output_path = context.sanitize_output.join(item.relative_path.as_str());
+			let output_path = context.sanitize_output.join(item.relative_path.as_str());
+			if journal.reusable(&item.relative_path, &input_hash, output_path.as_std_path()) {
+				let output_hash = hash_bytes(&std::fs::read(output_path.as_std_path())?);
 				context
 					.progress
 					.item_reused(id, ProcessStage::Sanitize, Some(output_path.clone()));
-				manifest_items.push(SanitizeManifestItem {
-					relative_path: item.relative_path.clone(),
-					input_hash,
-					output_hash: output_hash.clone(),
-				});
 				artifacts.push(ArtifactItem {
 					source: item.source,
 					relative_path: item.relative_path.clone(),
@@ -109,11 +100,6 @@ pub(crate) async fn execute_sanitize(
 			}
 
 			let output_hash = hash_bytes(&contents);
-			manifest_items.push(SanitizeManifestItem {
-				relative_path: item.relative_path.clone(),
-				input_hash,
-				output_hash: output_hash.clone(),
-			});
 			context
 				.progress
 				.item_skipped(id, ProcessStage::Sanitize, Some(output_path.clone()));
@@ -132,6 +118,7 @@ pub(crate) async fn execute_sanitize(
 		.into_iter()
 		.map(|(item, id, content, input_hash)| {
 			let ai_client = ai_client.clone();
+			let journal = journal.clone();
 			let progress = context.progress.clone();
 			let output_root = context.sanitize_output.clone();
 			let instructions = instructions.clone();
@@ -154,23 +141,22 @@ pub(crate) async fn execute_sanitize(
 				match result {
 					Ok((output_bytes, usage)) => {
 						let output_hash = hash_bytes(&output_bytes);
+						if let Err(error) = journal.record_done(&item.relative_path, &input_hash, &output_hash) {
+							progress.record_journal_error(ProcessStage::Sanitize, &item.relative_path, error);
+						}
 						progress.item_completed(id, ProcessStage::Sanitize, Some(output_path.clone()), usage.clone());
-						Ok((
-							ArtifactItem {
+						Ok(ArtifactItem {
 								source: item.source,
 								relative_path: item.relative_path.clone(),
 								local_path: output_path,
 								media_type: item.media_type,
 								source_hash: Some(output_hash.clone()),
-							},
-							SanitizeManifestItem {
-								relative_path: item.relative_path.clone(),
-								input_hash,
-								output_hash,
-							},
-						))
+							})
 					}
 					Err(message) => {
+						if let Err(error) = journal.record_failed(&item.relative_path, &message) {
+							progress.record_journal_error(ProcessStage::Sanitize, &item.relative_path, error);
+						}
 						progress.item_failed(id, ProcessStage::Sanitize, message.clone());
 						Err(message)
 					}
@@ -179,23 +165,11 @@ pub(crate) async fn execute_sanitize(
 		});
 
 	let results = run_bounded(tasks, context.concurrency, "Sanitize").await?;
-	for (artifact, manifest_item) in results.into_iter().flatten() {
+	for artifact in results.into_iter().flatten() {
 		artifacts.push(artifact);
-		manifest_items.push(manifest_item);
 	}
 
 	artifacts.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
-	manifest_items.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
-
-	let manifest = SanitizeManifest {
-		version: 1,
-		model: config.model.clone(),
-		prompt_hash,
-		items: manifest_items,
-	};
-	let manifest_json = serde_json::to_string_pretty(&manifest)
-		.map_err(|error| Error::MalformedState(format!("failed to serialize Sanitize manifest: {error}")))?;
-	write_sanitize_artifact(&context.sanitize_manifest, format!("{manifest_json}\n").as_bytes())?;
 
 	context.progress.stage_completed(ProcessStage::Sanitize);
 
@@ -210,50 +184,6 @@ pub(crate) async fn execute_sanitize(
 // endregion: --- Operations
 
 // region:    --- Support
-
-fn load_sanitize_manifest(
-	context: &WorkflowContext,
-	model: &str,
-	prompt_hash: &str,
-) -> HashMap<String, SanitizeManifestItem> {
-	if !context.resume {
-		return HashMap::new();
-	}
-
-	let Ok(contents) = std::fs::read(context.sanitize_manifest.as_std_path()) else {
-		return HashMap::new();
-	};
-	let Ok(manifest) = serde_json::from_slice::<SanitizeManifest>(&contents) else {
-		return HashMap::new();
-	};
-
-	if manifest.version != 1 || manifest.model != model || manifest.prompt_hash != prompt_hash {
-		return HashMap::new();
-	}
-
-	manifest
-		.items
-		.into_iter()
-		.map(|item| (item.relative_path.clone(), item))
-		.collect()
-}
-
-fn reusable_output_hash(
-	context: &WorkflowContext,
-	relative_path: &str,
-	input_hash: &str,
-	manifest: &HashMap<String, SanitizeManifestItem>,
-) -> Option<String> {
-	let item = manifest.get(relative_path)?;
-	if item.input_hash != input_hash {
-		return None;
-	}
-
-	let output_path = context.sanitize_output.join(relative_path);
-	let contents = std::fs::read(output_path.as_std_path()).ok()?;
-	let output_hash = hash_bytes(&contents);
-	(output_hash == item.output_hash).then_some(output_hash)
-}
 
 fn record_failure(context: &WorkflowContext, id: ItemId, source: String, message: String) {
 	let _ = source;

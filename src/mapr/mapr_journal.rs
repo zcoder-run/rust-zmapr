@@ -1,13 +1,12 @@
 #![doc = include_str!("../../docs/rustdoc/mapr/mapr-journal.md")]
 
 use crate::mapr::{FileMapEntry, FolderMapEntry, hash_file_bytes};
+use crate::support::{JsonlAppender, read_jsonl, truncate_to};
 use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
 use std::fs::OpenOptions;
-use std::io::{Seek, SeekFrom, Write};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
 
 // region:    --- Constants
 
@@ -117,7 +116,7 @@ pub struct JournalReuseIndex {
 /// Clones share the same file handle, and appends through that handle are serialized.
 pub struct JournalAppender {
 	path: PathBuf,
-	file: Arc<Mutex<std::fs::File>>,
+	appender: JsonlAppender,
 }
 
 // endregion: --- Types
@@ -196,62 +195,18 @@ pub fn load_journal(
 		return Ok(None);
 	}
 
-	let bytes = std::fs::read(path_ref)?;
-	if bytes.is_empty() {
+	let parsed = read_jsonl::<JournalRecord>(path_ref)?;
+	if let Some(line) = parsed.malformed_lines.first() {
+		return Err(Error::InvalidCache(format!(
+			"malformed journal line {line} in {}",
+			path_ref.display()
+		)));
+	}
+	if parsed.records.is_empty() {
 		return Ok(None);
 	}
 
-	let lines = extract_line_ranges(&bytes);
-	if lines.is_empty() {
-		return Ok(None);
-	}
-
-	let mut non_empty_lines = Vec::new();
-	for (start, end, delim_end) in lines {
-		if end > start {
-			non_empty_lines.push((start, end, delim_end));
-		}
-	}
-
-	if non_empty_lines.is_empty() {
-		return Ok(None);
-	}
-
-	let mut records = Vec::new();
-	let total = non_empty_lines.len();
-
-	for (idx, &(start, end, _)) in non_empty_lines.iter().enumerate() {
-		let is_last = idx == total - 1;
-		let line_str = match std::str::from_utf8(&bytes[start..end]) {
-			Ok(s) => s,
-			Err(_) if is_last => break,
-			Err(err) => {
-				return Err(Error::InvalidCache(format!(
-					"malformed UTF-8 journal line {} in {}: {err}",
-					idx + 1,
-					path_ref.display()
-				)));
-			}
-		};
-
-		match serde_json::from_str::<JournalRecord>(line_str) {
-			Ok(rec) => records.push(rec),
-			Err(_) if is_last => break,
-			Err(err) => {
-				return Err(Error::InvalidCache(format!(
-					"malformed journal line {} in {}: {err}",
-					idx + 1,
-					path_ref.display()
-				)));
-			}
-		}
-	}
-
-	if records.is_empty() {
-		return Ok(None);
-	}
-
-	let header = match &records[0] {
+	let header = match &parsed.records[0] {
 		JournalRecord::Header(header) => header,
 		_ => {
 			return Err(Error::InvalidCache(format!(
@@ -266,8 +221,8 @@ pub fn load_journal(
 	}
 
 	let mut index = JournalReuseIndex::new();
-	for rec in records.into_iter().skip(1) {
-		index.apply_record(&rec);
+	for rec in parsed.records.iter().skip(1) {
+		index.apply_record(rec);
 	}
 
 	Ok(Some(index))
@@ -446,58 +401,34 @@ impl JournalAppender {
 	/// Creates or truncates a journal, writes its header, and opens it for appending.
 	pub fn create_new(path: impl AsRef<Path>, header: &JournalHeader) -> Result<Self> {
 		let path_buf = path.as_ref().to_path_buf();
-		if let Some(parent) = path_buf.parent() {
-			std::fs::create_dir_all(parent)?;
-		}
-
-		let mut file = OpenOptions::new().create(true).write(true).truncate(true).open(&path_buf)?;
-
-		let header_record = JournalRecord::Header(header.clone());
-		let line = serde_json::to_string(&header_record)
-			.map_err(|err| Error::MalformedState(format!("failed to serialize journal header: {err}")))?;
-		writeln!(file, "{line}")?;
-		file.flush()?;
+		let appender = JsonlAppender::open(&path_buf, true)?;
+		appender.append(&JournalRecord::Header(header.clone()))?;
 
 		Ok(Self {
 			path: path_buf,
-			file: Arc::new(Mutex::new(file)),
+			appender,
 		})
 	}
 
 	/// Opens an existing journal for appending without validating its contents.
 	pub fn open_existing(path: impl AsRef<Path>) -> Result<Self> {
 		let path_buf = path.as_ref().to_path_buf();
-		let file = OpenOptions::new().append(true).open(&path_buf)?;
+		let appender = JsonlAppender::open(&path_buf, false)?;
 
 		Ok(Self {
 			path: path_buf,
-			file: Arc::new(Mutex::new(file)),
+			appender,
 		})
 	}
 
 	/// Serializes a record as one JSON line and appends it to the journal.
 	pub fn append(&self, record: &JournalRecord) -> Result<()> {
-		let line = serde_json::to_string(record)
-			.map_err(|err| Error::MalformedState(format!("failed to serialize journal record: {err}")))?;
-		let mut file = self
-			.file
-			.lock()
-			.map_err(|_| Error::MalformedState("failed to lock journal file".to_string()))?;
-		writeln!(file, "{line}")?;
-		file.flush()?;
-		Ok(())
+		self.appender.append(record)
 	}
 
 	/// Truncates the journal through this appender without writing a new header.
 	pub fn empty(&self) -> Result<()> {
-		let mut file = self
-			.file
-			.lock()
-			.map_err(|_| Error::MalformedState("failed to lock journal file".to_string()))?;
-		file.set_len(0)?;
-		file.seek(SeekFrom::Start(0))?;
-		file.flush()?;
-		Ok(())
+		self.appender.truncate()
 	}
 
 	/// Returns the path associated with this appender.
@@ -510,96 +441,25 @@ impl JournalAppender {
 
 // region:    --- Support
 
-fn extract_line_ranges(bytes: &[u8]) -> Vec<(usize, usize, usize)> {
-	let mut line_ranges = Vec::new();
-	let mut line_start = 0;
-
-	for (i, &b) in bytes.iter().enumerate() {
-		if b == b'\n' {
-			let content_end = if i > line_start && bytes[i - 1] == b'\r' {
-				i - 1
-			} else {
-				i
-			};
-			line_ranges.push((line_start, content_end, i + 1));
-			line_start = i + 1;
-		}
-	}
-
-	if line_start < bytes.len() {
-		line_ranges.push((line_start, bytes.len(), bytes.len()));
-	}
-
-	line_ranges
-}
-
 fn load_and_clean_journal(path: &Path, expected_header: &JournalHeader) -> Result<Option<JournalReuseIndex>> {
-	let bytes = std::fs::read(path)?;
-	if bytes.is_empty() {
+	let parsed = read_jsonl::<JournalRecord>(path)?;
+	if let Some(line) = parsed.malformed_lines.first() {
+		return Err(Error::InvalidCache(format!(
+			"malformed journal line {line} in {}",
+			path.display()
+		)));
+	}
+
+	let file_len = std::fs::metadata(path)?.len();
+	if parsed.valid_len < file_len {
+		truncate_to(path, parsed.valid_len)?;
+	}
+
+	if parsed.records.is_empty() {
 		return Ok(None);
 	}
 
-	let lines = extract_line_ranges(&bytes);
-	if lines.is_empty() {
-		return Ok(None);
-	}
-
-	let mut non_empty_lines = Vec::new();
-	for (start, end, delim_end) in lines {
-		if end > start {
-			non_empty_lines.push((start, end, delim_end));
-		}
-	}
-
-	if non_empty_lines.is_empty() {
-		return Ok(None);
-	}
-
-	let mut records = Vec::new();
-	let total = non_empty_lines.len();
-	let mut valid_byte_len = 0;
-
-	for (idx, &(start, end, delim_end)) in non_empty_lines.iter().enumerate() {
-		let is_last = idx == total - 1;
-		let line_str = match std::str::from_utf8(&bytes[start..end]) {
-			Ok(s) => s,
-			Err(_) if is_last => {
-				truncate_file_to(path, valid_byte_len)?;
-				break;
-			}
-			Err(err) => {
-				return Err(Error::InvalidCache(format!(
-					"malformed UTF-8 journal line {} in {}: {err}",
-					idx + 1,
-					path.display()
-				)));
-			}
-		};
-
-		match serde_json::from_str::<JournalRecord>(line_str) {
-			Ok(rec) => {
-				records.push(rec);
-				valid_byte_len = delim_end;
-			}
-			Err(_) if is_last => {
-				truncate_file_to(path, valid_byte_len)?;
-				break;
-			}
-			Err(err) => {
-				return Err(Error::InvalidCache(format!(
-					"malformed journal line {} in {}: {err}",
-					idx + 1,
-					path.display()
-				)));
-			}
-		}
-	}
-
-	if records.is_empty() {
-		return Ok(None);
-	}
-
-	let header = match &records[0] {
+	let header = match &parsed.records[0] {
 		JournalRecord::Header(header) => header,
 		_ => {
 			return Err(Error::InvalidCache(format!(
@@ -614,17 +474,11 @@ fn load_and_clean_journal(path: &Path, expected_header: &JournalHeader) -> Resul
 	}
 
 	let mut index = JournalReuseIndex::new();
-	for rec in records.into_iter().skip(1) {
-		index.apply_record(&rec);
+	for rec in parsed.records.iter().skip(1) {
+		index.apply_record(rec);
 	}
 
 	Ok(Some(index))
-}
-
-fn truncate_file_to(path: &Path, len: usize) -> Result<()> {
-	let file = OpenOptions::new().write(true).open(path)?;
-	file.set_len(len as u64)?;
-	Ok(())
 }
 
 // endregion: --- Support
@@ -636,7 +490,8 @@ mod tests {
 	type Result<T> = core::result::Result<T, Box<dyn std::error::Error>>;
 
 	use super::*;
-	use std::fs::read_to_string;
+	use std::fs::{OpenOptions, read_to_string};
+	use std::io::Write;
 
 	#[test]
 	fn test_mapr_journal_roundtrip_append_and_load() -> Result<()> {

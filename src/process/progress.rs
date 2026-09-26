@@ -8,7 +8,7 @@ use crate::event_base::{EventBaseError, MpscRx, MpscTx, OnceRx, OnceTx, new_mpsc
 use crate::{Error, Result};
 use simple_fs::SPath;
 use std::fmt;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 // region:    --- Types
 
@@ -112,6 +112,7 @@ pub struct ProgressRx {
 pub(crate) struct ProcessProgressPublisher {
 	tx: ProcessProgressTx,
 	state: Arc<ProcessStateStore>,
+	journal_errors: Arc<Mutex<Vec<String>>>,
 }
 
 // endregion: --- Types
@@ -140,7 +141,11 @@ impl ProgressRx {
 
 impl ProcessProgressPublisher {
 	pub(crate) fn new(tx: ProcessProgressTx, state: Arc<ProcessStateStore>) -> Self {
-		Self { tx, state }
+		Self {
+			tx,
+			state,
+			journal_errors: Arc::new(Mutex::new(Vec::new())),
+		}
 	}
 }
 
@@ -163,6 +168,28 @@ impl ProcessProgressPublisher {
 		for update in self.state.fail_workflow(message) {
 			self.send_update(update);
 		}
+	}
+
+	pub(crate) fn record_journal_error(&self, stage: ProcessStage, path: &str, error: impl fmt::Display) {
+		let message = format!("{stage:?} journal append failed for {path}: {error}");
+		self.journal_errors
+			.lock()
+			.unwrap_or_else(|error| error.into_inner())
+			.push(message);
+	}
+
+	pub(crate) fn record_journal_warning(&self, stage: ProcessStage, warning: impl fmt::Display) {
+		self.journal_errors
+			.lock()
+			.unwrap_or_else(|error| error.into_inner())
+			.push(format!("{stage:?} journal warning: {warning}"));
+	}
+
+	pub(crate) fn journal_errors(&self) -> Vec<String> {
+		self.journal_errors
+			.lock()
+			.unwrap_or_else(|error| error.into_inner())
+			.clone()
 	}
 
 	pub(crate) fn finish(&self) -> Result<(FinalStats, Vec<super::item::ItemState>)> {
@@ -320,3 +347,33 @@ pub(crate) fn event_base_error_to_error(error: EventBaseError) -> Error {
 }
 
 // endregion: --- Support
+
+// region:    --- Tests
+
+#[cfg(test)]
+mod tests {
+	type Result<T> = core::result::Result<T, Box<dyn std::error::Error>>;
+
+	use super::*;
+	use crate::process::state::{StageSelection, new_process_state};
+
+	#[test]
+	fn test_process_progress_record_journal_error() -> Result<()> {
+		// -- Setup & Fixtures
+		let (tx, _rx) = new_progress_channel()?;
+		let publisher = ProcessProgressPublisher::new(tx, new_process_state(StageSelection::default()));
+		let publisher_clone = publisher.clone();
+
+		// -- Exec
+		publisher_clone.record_journal_error(ProcessStage::Map, "src/a.md", "disk full");
+
+		// -- Check
+		assert_eq!(
+			publisher.journal_errors(),
+			vec!["Map journal append failed for src/a.md: disk full"]
+		);
+		Ok(())
+	}
+}
+
+// endregion: --- Tests
